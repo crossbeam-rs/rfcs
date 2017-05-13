@@ -168,8 +168,8 @@ The number that is allocated on the heap (777) might not get printed because
 the CAS in the first thread is not synchronized with the load in the second thread.
 The memory orderings must be at least `Acquire` and `Release`, respectively.
 
-By using relaxed orderings we can create a data race within safe code. This is
-unsound, as Rust must not allow data races in safe code.
+By using relaxed orderings we can access unsynchronized non-atomic data within safe code.
+This is unsound, as Rust must not allow data races (or reading uninitialized data) in safe code.
 
 It's possible to fix the problem by restricting the API for loads to only accept
 `Acquire` or stronger, and stores to only accept `Release` or stronger. That
@@ -198,16 +198,14 @@ nodes and deallocate them. For example:
 ```rust
 impl<T> Drop for Stack<T> {
     fn drop(&mut self) {
-        epoch::pin(|pin| {
-            let mut curr = self.head.load(Relaxed, pin);
-            while !curr.is_null() {
-                unsafe {
-                    let next = curr.deref().next.load(Relaxed, pin);
-                    drop(Box::from_raw(curr.as_raw()));
-                    curr = next;
-                }
-            }
-        });
+        let pin = unsafe { &epoch::assert_ownership() };
+
+        let mut curr = self.head.load(Relaxed, pin);
+        while !curr.is_null() {
+            let next = curr.deref().next.load(Relaxed, pin);
+            drop(Box::from_raw(curr.as_raw()));
+            curr = next;
+        }
     }
 }
 ```
