@@ -288,7 +288,7 @@ other threads concurrently destroying objects. Then we can do:
 impl<T> Drop for Stack<T> {
     fn drop(&mut self) {
         unsafe {
-            epoch::unprotected(|scope| {
+            epoch::exclusive(|scope| {
                 let mut curr = self.head.load(Relaxed, scope);
                 while !curr.is_null() {
                     let next = curr.deref().next.load(Relaxed, scope);
@@ -301,10 +301,11 @@ impl<T> Drop for Stack<T> {
 }
 ```
 
-Function `epoch::unprotected` is unsafe because we must promise that no other
-thread is accessing our `Atomic`s and objects.
+Function `epoch::exclusive` is unsafe because we must promise that we have exclusive
+access to our `Atomic`s and objects. In other words, no other thread is accessing
+them at the same time.
 
-Just like with the safe `epoch::pin` function, unprotected use of atomics is
+Just like with the safe `epoch::pin` function, exclusive use of atomics is
 enclosed within a scope so that pointers created within it don't leak out or get
 mixed with pointers from other scopes.
 
@@ -597,7 +598,7 @@ What if one needs an `Owned<T>` that uses custom functions for
 allocation and deallocation? Should we provide a nice interface for
 such cases?
 
-Also, how do dynamically sized types actually interact with all this?
+Also, how do dynamically sized types interact with all this?
 
 ### Fat pointers and DSTs
 
