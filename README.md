@@ -1,19 +1,22 @@
 # Crossbeam RFCs
 
-This is a repository where proposals for substantial changes to Crossbeam
+This is the repository where proposals for substantial changes to Crossbeam
 can be discussed. Such proposals take the form of a written document and
-end up with a consensus among the following Crossbeam team members:
+end with a consensus among the following Crossbeam team members:
 
-- @arthurprs
-- @jeehoonkang
-- @schets
-- @stjepang
+- [arthurprs](https://github.com/arthurprs)
+- [aturon](https://github.com/aturon)
+- [jeehoonkang](https://github.com/jeehoonkang)
+- [schets](https://github.com/schets)
+- [stjepang](https://github.com/stjepang)
 
-If someone wants to get onto or off this list, hop into our IRC channel and
-let us know!
+Such proposals (RFCs: requests for comments) can also become a very useful form of
+documentation.
 
-Of course, *everyone* is welcome to submit new RFCs and participate in
-existing RFCs.
+Everyone is welcome to submit new RFCs and participate in existing RFCs.
+
+For real-time collaboration we hang out in the IRC channel
+(`#crossbeam` at `irc.mozilla.org`).
 
 ### How to submit a RFC
 
