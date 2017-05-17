@@ -288,7 +288,7 @@ other threads concurrently destroying objects. Then we can do:
 impl<T> Drop for Stack<T> {
     fn drop(&mut self) {
         unsafe {
-            epoch::exclusive(|scope| {
+            epoch::unprotected(|scope| {
                 let mut curr = self.head.load(Relaxed, scope);
                 while !curr.is_null() {
                     let next = curr.deref().next.load(Relaxed, scope);
@@ -301,11 +301,14 @@ impl<T> Drop for Stack<T> {
 }
 ```
 
-Function `epoch::exclusive` is unsafe because we must promise that we have exclusive
-access to our `Atomic`s and objects. In other words, no other thread is accessing
-them at the same time.
+Function `epoch::unprotected` is unsafe because we must promise that no other thread
+is accessing the `Atomic`s and objects at the same time. The function is safe to
+use in the following cases only:
 
-Just like with the safe `epoch::pin` function, exclusive use of atomics is
+* Our thread is the only one accessing the atomics.
+* No thread (including our own) is modifying the atomics.
+
+Just like with the safe `epoch::pin` function, unprotected use of atomics is
 enclosed within a scope so that pointers created within it don't leak out or get
 mixed with pointers from other scopes.
 
