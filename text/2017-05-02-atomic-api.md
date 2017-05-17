@@ -361,6 +361,7 @@ struct Atomic<T> { ... }
 
 impl<T> Atomic<T> {
     pub fn null() -> Self;
+    pub fn new(t: T) -> Self;
     pub fn from_owned(owned: Owned<T>) -> Self;
     pub fn from_ptr(ptr: Ptr<T>) -> Self;
 
