@@ -423,8 +423,8 @@ impl<T> DerefMut for Owned<T> { ... }
 impl<T> Owned<T> {
     pub fn new(t: T) -> Self;
     pub fn from_box(b: Box<T>) -> Self;
+    pub unsafe fn from_raw(raw: *mut T) -> Self;
 
-    pub fn as_raw(&self) -> *mut T;
     pub fn into_ptr<'scope>(self, _: &'scope Scope) -> Ptr<'scope, T>;
 
     pub fn tag(&self) -> usize;
@@ -445,10 +445,10 @@ impl<'scope, T> Copy for Ptr<'scope, T> { ... }
 
 impl<'scope, T> Ptr<'scope, T> {
     pub fn null() -> Self;
-    pub unsafe fn from_raw(raw: *mut T) -> Self;
+    pub unsafe fn from_raw(raw: *const T) -> Self;
 
     pub fn is_null(&self) -> bool;
-    pub fn as_raw(&self) -> *mut T;
+    pub fn as_raw(&self) -> *const T;
     pub unsafe fn deref(&self) -> &'scope T;
     pub unsafe fn as_ref(&self) -> Option<&'scope T>;
 
