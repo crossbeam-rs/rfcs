@@ -177,7 +177,7 @@ table at all? Well, Rust disallows misuse of the epoch GC in multiple ways:
 on success and returns it back on failure. This is achieved through Rust's
 move semantics and affine types.
 2. It enforces correct use of shared pointers. Shared pointers are valid
-only when the current thredad is pinned. This is achieved with the help of
+only when the current thread is pinned. This is achieved with the help of
 Rust's lifetimes.
 
 ### Destructors
@@ -575,7 +575,7 @@ that something important is going on in a scope.
 Closures are also more difficult to misuse.
 
 Moreover, it's hard to explain why, but closures have shown slightly
-better numbers in my benchmarks (anecdotal evidence).
+better numbers in my benchmarks (anecdotal evidence only).
 
 Perhaps the decision is not clear-cut, but for the aforementioned
 reasons closures are preferred over guards. They are more explicit,
@@ -608,7 +608,8 @@ Also, how do dynamically sized types interact with all this?
 
 Consider a node in a skiplist. It consists of: key, value, tower. The tower is
 an array of atomic pointers. To save a level of indirection, it is wise to lay out
-the entire tower inside the node. This means that nodes are dynamically sized.
+the entire tower inside the node. Since towers consist of variable number of
+pointers, skiplist nodes are dynamically sized.
 
 Another example might be arrays backing hash-tables or Chase-Lev deques. They too
 are dynamically sized so it might make sense to lay out the length together with
