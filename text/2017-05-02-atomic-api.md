@@ -602,7 +602,12 @@ What if one needs an `Owned<T>` that uses custom functions for
 allocation and deallocation? Should we provide a nice interface for
 such cases?
 
-Also, how do dynamically sized types interact with all this?
+It makes sense to provide an unsafe function that re-pins the current thread,
+mostly for use in long-running scopes. Re-pinning would be unsafe because
+it invalidates all present `Ptr`s. What are more concrete use cases for such
+a feature and what is the best interface for it?
+
+How do dynamically sized types interact with the API?
 
 ### Fat pointers and DSTs
 
