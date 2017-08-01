@@ -45,9 +45,9 @@ w.r.t. the C11 memory model.
 ## Proposed implementation
 
 As discussed in Aaron Turon's original [blog post][aturon]
-and [the pull request of a previous RFC][rfc2-pr], Crossbeam guarantees that *every access to a
+and [the pull request of a previous RFC][rfc2-pr], Crossbeam guarantees that *every access to an
 object should happen before the object is deallocated*.  In order to provide this guarantee,
-Crossbeam assumes that when a pinned thread marks a object as unlinked, *the thread already removed
+Crossbeam assumes that when a pinned thread marks an object as unlinked, *the thread already removed
 all the references to the object from the memory on the thread's point of view.*; and Crossbeam
 defers the deallocation of an unlinked object until all the threads concurrently pinned at the time
 the object is unlinked, are unpinned.
@@ -56,7 +56,7 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
 
 - There is a local epoch `th.epoch` for each *pinned* thread `th`, and a global epoch `EPOCH`.
 
-- When a object is deallocated, it is marked with the **current** global epoch, as in the following
+- When an object is deallocated, it is marked with the **current** global epoch, as in the following
   pseudocode (for now, please ignore the fences and the orderings such as `Relaxed`, `Acquire`,
   `Release`, and `SeqCst`):
 
@@ -95,13 +95,13 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
   ```rust
   fn try_advance() {
     'L40: let G = EPOCH.load(Relaxed);
-    'L41: fence(SeqCst);
+    'L41: atomic::fence(SeqCst);
 
     'L42: for th in threads {
     'L43:   let e = th.epoch.load(Relaxed);
     'L44:   if e != SENTINEL && e != G { return; }
     'L45: }
-    'L46: fence(Acquire);
+    'L46: atomic::fence(Acquire);
 
     'L47: EPOCH.store(G + 1, Release);
 
@@ -111,7 +111,7 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
 
 Note that at `pin(): 'L23` and `try_advance(): 'L48`, an unlinked object marked with an epoch two
 generations before than the current global one, can be deallocated.  In other words, you can
-deallocate a object marked with `X` when the current global epoch `>= X+2`.  This is because:
+deallocate an object marked with `X` when the current global epoch `>= X+2`.  This is because:
 
 - For each pinned thread `th`, as an invariant, the local epoch `th.epoch` equals to either `EPOCH`
   or `EPOCH-1`.  Thus when `EPOCH >= X+2`, a local epoch should be greater than or equal to `X+1`.
@@ -127,7 +127,7 @@ deallocate a object marked with `X` when the current global epoch `>= X+2`.  Thi
 
 Now we explain why the proposed implementation is correct w.r.t. the C11 memory model.
 
-Suppose that the current epoch is `X+2`, and a object `unlink()`ed and marked with `X` is about to
+Suppose that the current epoch is `X+2`, and an object `unlink()`ed and marked with `X` is about to
 be deallocated.  For correctness, we need to ensure that a concurrent `pin()`ned thread cannot
 access the object.
 
@@ -156,13 +156,13 @@ memory on its point of view.  By cumulativity, `pin()`ned thread cannot access t
 - By transitivity, `pin()`'s SC fence is performed before `try_advance()`'s SC fence.  Thus the
   store to the local epoch at `pin(): 'L21` is SC-executed before the load from it at
   `try_advance(): 'L43`.  Thus `'L43` should read from what is written at `'L21` or a more recent
-  value that.
+  value than that.
 
 - In order to reach `try_advance(): 'L47` and increment the global epoch, `'L43` should not read
   from what is written at `'L21`.  It should read from what is written at `unpin(): 'L30` or a more
   recent value than that.  Thus, by release-acquire synchronization, `'L30` happens before `'L46`.
   
-- Since a thread should access a object before `unpin()`, every access to the unlinked object from
+- Since a thread should access an object before `unpin()`, every access to the unlinked object from
   the `pin()`ned thread happens before the object's deallocation.
 
 
