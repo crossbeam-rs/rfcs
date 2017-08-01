@@ -38,8 +38,8 @@ does not aim for clarifying how Rust's type system helps to ensure the correctne
 
 # Detailed design
 
-In this section, we present the proposed implementation of Crossbeam, and explain why it is correct
-w.r.t. the C11 memory model.
+In this section, we present the proposed implementation of Crossbeam in pseudocode, and explain why
+it is correct w.r.t. the C11 memory model.
 
 
 ## Proposed implementation
@@ -48,22 +48,23 @@ As discussed in Aaron Turon's original [blog post][aturon]
 and [the pull request of a previous RFC][rfc2-pr], Crossbeam guarantees that *every access to an
 object should happen before the object is deallocated*.  In order to provide this guarantee,
 Crossbeam assumes that when a pinned thread marks an object as unlinked, *the thread already removed
-all the references to the object from the memory on the thread's point of view.*; and Crossbeam
-defers the deallocation of an unlinked object until all the threads concurrently pinned at the time
-the object is unlinked, are unpinned.
+all the references to the object from the memory, and all the other threads do not reintroduce a
+reference to the object in the memory*; and Crossbeam defers the deallocation of an unlinked object
+until all the threads concurrently pinned at the time the object is unlinked, are unpinned.
 
 In order to track the concurrently pinned threads, Crossbeam utilizes the epoch as follows:
 
 - There is a local epoch `th.epoch` for each *pinned* thread `th`, and a global epoch `EPOCH`.
 
 - When an object is deallocated, it is marked with the **current** global epoch, as in the following
-  pseudocode (for now, please ignore the fences and the orderings such as `Relaxed`, `Acquire`,
-  `Release`, and `SeqCst`):
+  pseudocode (fences and orderings such as `Relaxed`, `Acquire`, `Release`, and `SeqCst` will be
+  explained below):
 
   ```rust
   fn unlink(l) {
     'L10: atomic::fence(SeqCst);
     'L11: let epoch = EPOCH.load(Relaxed);
+
     'L12: // mark `l` with `epoch`
   }
   ```
@@ -111,56 +112,73 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
 
 Note that at `pin(): 'L23` and `try_advance(): 'L48`, an unlinked object marked with an epoch two
 generations before than the current global one, can be deallocated.  In other words, you can
-deallocate an object marked with `X` when the current global epoch `>= X+2`.  This is because:
-
-- For each pinned thread `th`, as an invariant, the local epoch `th.epoch` equals to either `EPOCH`
-  or `EPOCH-1`.  Thus when `EPOCH >= X+2`, a local epoch should be greater than or equal to `X+1`.
-  Similarly, all the threads that will be pinned later will have the local epoch `>= X+1`.
-
-- Which means the unlinking of the object (marked with the epoch `X`) happens before all the threads
-  that are or will be pinned (at epoch `>= X+1`).
-
-- By the assumption, the object is safe to deallocate.
+deallocate an object marked with `X` when the current global epoch `>= X+2`.
 
 
 ## Correctness
 
 Now we explain why the proposed implementation is correct w.r.t. the C11 memory model.
 
-Suppose that the current epoch is `X+2`, and an object `unlink()`ed and marked with `X` is about to
-be deallocated.  For correctness, we need to ensure that a concurrent `pin()`ned thread cannot
-access the object.
+Suppose that the current epoch is `X+2`, and thread U `unlink()`ed an object and marked it with the
+epoch `X`, and thread D is about to deallocate the object.  For correctness, we need to ensure that
+the accesses to the object by `pin()`ned threads happen before the deallocation.  For example, in
+the following timeline, threads A and B should not be able to access `l` after its deallocation.
+
+```
+         [X]                   [X+1]              [X+2]
+EPOCH    +---------------------+----------------+-------------------------------
+
+                                                      [deallocating l]
+Thread D ---------------------------------------------+-------------------------
+
+                                          [2. pinned]         [is l accessible?]
+Thread A ---------------------------------+-------------------+-----------------
+
+      [l removed] [1. unlinking l]   [unpinned]
+Thread U ---------+------------------+------------------------------------------
+
+             [3. pinned]  [unpinned]                          [is l accessible?]
+Thread B ----+------------+-----------------------------------+-----------------
+
+                                                [4. try_advance]
+Thread E ---------------------------------------+-------------------------------
+```
 
 As we will see, the correctness heavily depends on the "cumulativity" of SC fences.  Intuitively, it
 means that if a thread A's SC fence is performed before another thread B's SC fence, then all
 information gathered before A's fence becomes visible after B's fence.  In that case, we say that
-the instructions before A's fence is *SC-executed before* the instructions after B's fence.  This
-synchronization is also used in the [C11 version of Chase-Lev deque][weak-chase-lev].  For more
+the instructions before A's fence is *visible via SC fences to* the instructions after B's fence.
+This synchronization is also used in the [C11 version of Chase-Lev deque][weak-chase-lev].  For more
 information on the cumulativity, see a [recent understanding of C11 SC atomics][scfix].
 
 Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
 ### When `unlink()`'s SC fence is performed before `pin()`'s SC fence
 
+Thread A, for example, should not be able to access `l` after its deallocation, because:
+
 - By assumption, the `unlink()`ing thread already removed all the references to the object from the
-memory on its point of view.  By cumulativity, `pin()`ned thread cannot access the old object.
+memory on its point of view.  By cumulativity form `unlink()`'s SC fence (1. in the timeline) to
+`pin()`'s (2. in the timeline), `pin()`ned thread cannot access the old object `l`.
 
 
 ### When `pin()`'s SC fence is performed before `unlink()`'s SC fence
 
-- Let's consider the invocation of `try_advance()` that actually advances the global epoch to `X+2`.
-  `unlink()`'s SC fence is performed before `try_advance()`'s SC fence.  Because otherwise,
-  `try_advance(): 'L40`, which reads `X+1` from `EPOCH`, is SC-executed before `unlink(): 'L11`,
-  which reads `X` from `EPOCH`.  This is a contradiction.
+Thread B, for example, should not be able to access `l` after its deallocation, because:
 
-- By transitivity, `pin()`'s SC fence is performed before `try_advance()`'s SC fence.  Thus the
-  store to the local epoch at `pin(): 'L21` is SC-executed before the load from it at
-  `try_advance(): 'L43`.  Thus `'L43` should read from what is written at `'L21` or a more recent
-  value than that.
+- Let's consider the invocation of `try_advance()` that actually advances the global epoch to `X+2`.
+  `unlink()`'s SC fence (1. in the timeline) is performed before `try_advance()`'s SC fence (4. in
+  the timeline).  Because otherwise, `try_advance(): 'L40`, which reads `X+1` from `EPOCH`, is
+  visible via SC fences to `unlink(): 'L11`, which reads `X` from `EPOCH`.  This is a contradiction.
+
+- By transitivity, `pin()`'s SC fence (3. in the timeline) is performed before `try_advance()`'s SC
+  fence (4. in the timeline).  Thus the store to the local epoch at `pin(): 'L21` is visible via SC
+  fences to the load from it at `try_advance(): 'L43`, and `'L43` should read from what is written
+  at `'L21` or a more recent value than that.
 
 - In order to reach `try_advance(): 'L47` and increment the global epoch, `'L43` should not read
-  from what is written at `'L21`.  It should read from what is written at `unpin(): 'L30` or a more
-  recent value than that.  Thus, by release-acquire synchronization, `'L30` happens before `'L46`.
+  from what is written at `'L21`.  Thus it should read from what is written at `unpin(): 'L30` or a
+  more recent value than that, and by release-acquire synchronization, `'L30` happens before `'L46`.
   
 - Since a thread should access an object before `unpin()`, every access to the unlinked object from
   the `pin()`ned thread happens before the object's deallocation.
