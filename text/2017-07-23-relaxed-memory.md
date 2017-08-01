@@ -9,10 +9,10 @@ w.r.t. C11/C++11/LLVM/Rust relaxed-memory concurrency model (the "C11 memory mod
 # Motivation
 
 Crossbeam is based on the epoch-based memory reclamation scheme (EBR).  In EBR, an **epoch** (think:
-timestamp) is maintained, and a location is mark with the current epoch when the location is
-unlinked.  The unlinked location is safe to deallocate later when the epoch is advanced enough.  As
-you may guess, the correctness of EBR crucially depends on the invariant on the epoch: it is
-advanced only when old locations unlinked in the past are no longer accessible.
+timestamp) is maintained, and an object is mark with the current epoch when the object is unlinked.
+The unlinked object is safe to deallocate later when the epoch is advanced enough.  As you may
+guess, the correctness of EBR crucially depends on the invariant on the epoch: unlinked objects are
+inaccessible after two advancements.
 
 EBR is introduced in [Keir Fraser's PhD thesis][kfraser], and later Aaron Turon introduced it
 in [his blog post on Crossbeam][aturon] to the Rust community.  Both explains EBR in details so that
@@ -46,19 +46,19 @@ w.r.t. the C11 memory model.
 
 As discussed in Aaron Turon's original [blog post][aturon]
 and [the pull request of a previous RFC][rfc2-pr], Crossbeam guarantees that *every access to a
-location should happen before the location is deallocated*.  In order to provide this guarantee,
-Crossbeam assumes that when a pinned thread marks a location as unlinked, *the thread already
-removed all the references to the location from the memory on the thread's point of view.*; and
-Crossbeam defers the deallocation of an unlinked location until all the threads concurrently pinned
-at the time the location is unlinked, are unpinned.
+object should happen before the object is deallocated*.  In order to provide this guarantee,
+Crossbeam assumes that when a pinned thread marks a object as unlinked, *the thread already removed
+all the references to the object from the memory on the thread's point of view.*; and Crossbeam
+defers the deallocation of an unlinked object until all the threads concurrently pinned at the time
+the object is unlinked, are unpinned.
 
 In order to track the concurrently pinned threads, Crossbeam utilizes the epoch as follows:
 
 - There is a local epoch `th.epoch` for each *pinned* thread `th`, and a global epoch `EPOCH`.
 
-- When a location is deallocated, it is marked with the **current** global epoch, as in the
-  following pseudocode (for now, please ignore the fences and the orderings such as `Relaxed`,
-  `Acquire`, `Release`, and `SeqCst`):
+- When a object is deallocated, it is marked with the **current** global epoch, as in the following
+  pseudocode (for now, please ignore the fences and the orderings such as `Relaxed`, `Acquire`,
+  `Release`, and `SeqCst`):
 
   ```rust
   fn unlink(l) {
@@ -77,7 +77,7 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
     'L21: th.epoch.store(e, Relaxed);
     'L22: atomic::fence(SeqCst);
 
-    'L23: // now locations marked with `<= e - 2` can be deallocated.
+    'L23: // now objects marked with `<= e - 2` can be deallocated.
   }
   ```
   
@@ -105,31 +105,31 @@ In order to track the concurrently pinned threads, Crossbeam utilizes the epoch 
 
     'L47: EPOCH.store(G + 1, Release);
 
-    'L48: // now locations marked with `<= e - 1` can be deallocated.
+    'L48: // now objects marked with `<= e - 1` can be deallocated.
   }
   ```
 
-Note that at `pin(): 'L23` and `try_advance(): 'L48`, an unlinked location marked with an epoch two
+Note that at `pin(): 'L23` and `try_advance(): 'L48`, an unlinked object marked with an epoch two
 generations before than the current global one, can be deallocated.  In other words, you can
-deallocate a location marked with `X` when the current global epoch `>= X+2`.  This is because:
+deallocate a object marked with `X` when the current global epoch `>= X+2`.  This is because:
 
 - For each pinned thread `th`, as an invariant, the local epoch `th.epoch` equals to either `EPOCH`
   or `EPOCH-1`.  Thus when `EPOCH >= X+2`, a local epoch should be greater than or equal to `X+1`.
   Similarly, all the threads that will be pinned later will have the local epoch `>= X+1`.
 
-- Which means the unlinking of the location (marked with the epoch `X`) happens before all the
-  threads that are or will be pinned (at epoch `>= X+1`).
+- Which means the unlinking of the object (marked with the epoch `X`) happens before all the threads
+  that are or will be pinned (at epoch `>= X+1`).
 
-- By the assumption, the location is safe to deallocate.
+- By the assumption, the object is safe to deallocate.
 
 
 ## Correctness
 
 Now we explain why the proposed implementation is correct w.r.t. the C11 memory model.
 
-Suppose that the current epoch is `X+2`, and a location `unlink()`ed and marked with `X` is about to
+Suppose that the current epoch is `X+2`, and a object `unlink()`ed and marked with `X` is about to
 be deallocated.  For correctness, we need to ensure that a concurrent `pin()`ned thread cannot
-access the location.
+access the object.
 
 As we will see, the correctness heavily depends on the "cumulativity" of SC fences.  Intuitively, it
 means that if a thread A's SC fence is performed before another thread B's SC fence, then all
@@ -142,8 +142,8 @@ Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
 ### When `unlink()`'s SC fence is performed before `pin()`'s SC fence
 
-- By assumption, the `unlink()`ing thread already removed all the references to the location from
-the memory on its point of view.  By cumulativity, `pin()`ned thread cannot access the old location.
+- By assumption, the `unlink()`ing thread already removed all the references to the object from the
+memory on its point of view.  By cumulativity, `pin()`ned thread cannot access the old object.
 
 
 ### When `pin()`'s SC fence is performed before `unlink()`'s SC fence
@@ -162,8 +162,8 @@ the memory on its point of view.  By cumulativity, `pin()`ned thread cannot acce
   from what is written at `'L21`.  It should read from what is written at `unpin(): 'L30` or a more
   recent value than that.  Thus, by release-acquire synchronization, `'L30` happens before `'L46`.
   
-- Since a thread should access a location before `unpin()`, every access to the unlinked location
-  from the `pin()`ned thread happens before the location's deallocation.
+- Since a thread should access a object before `unpin()`, every access to the unlinked object from
+  the `pin()`ned thread happens before the object's deallocation.
 
 
 
