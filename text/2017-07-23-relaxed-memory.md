@@ -117,7 +117,8 @@ deallocate an object marked with `X` when the current global epoch `>= X+2`.
 
 ## Correctness
 
-Now we explain why the proposed implementation is correct w.r.t. the C11 memory model.
+Now we explain why the proposed implementation is correct
+w.r.t. [the state-of-art model for C11 concurrency][promising].
 
 Suppose that the current epoch is `X+2`, and thread U `unlink()`ed an object and marked it with the
 epoch `X`, and thread D is about to deallocate the object.  For correctness, we need to ensure that
@@ -194,7 +195,7 @@ believe the current implementation is buggy w.r.t. the C11 memory model, because
 reads/writes that do not provide cumulativity.  As opposed to widely believed, SC loads and stores
 are relatively weak according to the C11 standard: in particular, the memory model designers intend
 to allow reordering of an SC load before a relaxed store, and that of SC writes after a relaxed
-load.  See a [recent paper][scfix] for more details.
+load.  See a [recent paper on the SC semantics of C11][scfix] for more details.
 
 ## Target-dependent implementation
 
@@ -208,8 +209,8 @@ will cost a lot.
 Before start trying to formally explain why Crossbeam is correct, it may be worth waiting for the
 underlying C11 memory model to be stabilized.  The model has greatly been clarified and improved in
 the last decades, but it is still subject to change a lot.  However, the fragment of the model on
-which Crossbeam relies is quite solid so that it is worth reasoning Crossbeam on the
-current [state-of-art concurrency semantics][promising].
+which Crossbeam relies is quite solid so that it is worth reasoning Crossbeam
+on [the state-of-art model for C11 concurrency][promising].
 
 ## Ensuring correctness by testing
 
