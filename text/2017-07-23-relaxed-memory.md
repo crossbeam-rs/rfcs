@@ -222,7 +222,10 @@ shows the presence, not the absence of bugs".
 
 # Unresolved questions
 
-Is it *really* the most efficient implementation in the C11 memory model?
+Is it *really* the most efficient implementation in the C11 memory model?  Especially, it would be
+greatly beneficial to the performance if we could remove the `SeqCst` fence in `unlink()`.  It would
+possibly be the case even if we should wait for three epoch advancements (instead of two) before
+deallocating an object.  It is an important direction of future work.
 
 Is there any soundness gap in above description?  More ambitiously, can we formally verify the
 correctness of Crossbeam?
