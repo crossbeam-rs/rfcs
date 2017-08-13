@@ -126,6 +126,10 @@ the accesses to the object by `pin()`ned threads happen before the deallocation.
 the following timeline, accesses to `obj` by threads A and B should happen before `obj`'s
 deallocation.
 
+On the terminology "happens before": we say A happens before B iff all the information on the memory
+visible to A is also visible to B.  Note that this is different from the C11 Standard's notion of
+"happens-before".
+
 ```
          [X]                       [X+1]            [X+2]
 EPOCH    +-------------------------+----------------+----------------------------------
@@ -147,11 +151,12 @@ Thread E -------------------------------------------+---------------------------
 ```
 
 As we will see, the correctness heavily depends on the "cumulativity" of SC fences.  Intuitively, it
-means that if a thread A's SC fence is performed before another thread B's SC fence, then all
-information gathered before A's fence becomes visible after B's fence.  In that case, we say that
-the instructions before A's fence is *visible via SC fences to* the instructions after B's fence.
-This synchronization is also used in the [C11 version of Chase-Lev deque][weak-chase-lev].  For more
-information on the cumulativity, see a [recent understanding of C11 SC atomics][scfix].
+means that if a thread A's SC fence is performed before another thread B's SC fence, then A's fence
+happens before B's fence, and all information gathered before A's fence becomes visible after B's
+fence.  In that case, we say that the instructions before A's fence is *visible via SC fences to*
+the instructions after B's fence.  This synchronization is also used in
+the [C11 version of Chase-Lev deque][weak-chase-lev].  For more information on the cumulativity, see
+a [recent understanding of C11 SC atomics][scfix].
 
 Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
