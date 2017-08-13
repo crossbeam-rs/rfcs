@@ -25,7 +25,7 @@ enjoy the luxury of SC.  In particular, the C11/C++11/LLVM/Rust memory model is 
 
 As a result, it is still unclear after two years of development whether the implementation of
 Crossbeam is correct w.r.t. the C11 memory model.  We believe that in order for Crossbeam to indeed
-serve as the library for Rust concurrency, as `java.util.concurrent` does for Java concurrency,
+serve as "the" Rust library for fine-grained concurrency, as `java.util.concurrent` does for Java,
 Crossbeam's correctness should be formally analyzed and hopefully verified.  This RFC aims for
 providing a step towards the goal.
 
@@ -120,10 +120,11 @@ deallocate an object marked with `X` when the current global epoch `>= X+2`.
 Now we explain why the proposed implementation is correct
 w.r.t. [the state-of-art model for C11 concurrency][promising].
 
-Suppose that the current epoch is `X+2`, and thread U `unlink()`ed an object and marked it with the
+Suppose that the current epoch is `X+2`, thread U `unlink()`ed an object and marked it with the
 epoch `X`, and thread D is about to deallocate the object.  For correctness, we need to ensure that
 the accesses to the object by `pin()`ned threads happen before the deallocation.  For example, in
-the following timeline, threads A and B should not be able to access `obj` after its deallocation.
+the following timeline, accesses to `obj` by threads A and B should happen before `obj`'s
+deallocation.
 
 ```
          [X]                       [X+1]            [X+2]
@@ -156,7 +157,7 @@ Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
 ### When `unlink()`'s SC fence is performed before `pin()`'s SC fence
 
-Thread A, for example, should not be able to access `obj` after its deallocation, because:
+Thread A's accesses to `obj`, for example, should happen before `obj`'s deallocation, because:
 
 - By assumption, the `unlink()`ing thread already removed all the references to the object from the
 memory on its point of view.  By cumulativity from `unlink()`'s SC fence (1. in the timeline) to
@@ -165,7 +166,7 @@ memory on its point of view.  By cumulativity from `unlink()`'s SC fence (1. in 
 
 ### When `pin()`'s SC fence is performed before `unlink()`'s SC fence
 
-Thread B, for example, should not be able to access `obj` after its deallocation, because:
+Thread B's accesses to `obj`, for example, should happen before `obj`'s deallocation, because:
 
 - Let's consider the invocation of `try_advance()` that actually advances the global epoch to `X+2`.
   `unlink()`'s SC fence (1. in the timeline) is performed before `try_advance()`'s SC fence (4. in
