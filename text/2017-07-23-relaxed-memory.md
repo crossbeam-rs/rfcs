@@ -150,13 +150,13 @@ Thread B ------+--------------+-----------------------------------+-------------
 Thread E -------------------------------------------+----------------------------------
 ```
 
-As we will see, the correctness heavily depends on the "cumulativity" of SC fences.  Intuitively, it
-means that if a thread A's SC fence is performed before another thread B's SC fence, then A's fence
-happens before B's fence, and all information gathered before A's fence becomes visible after B's
-fence.  In that case, we say that the instructions before A's fence is *visible via SC fences to*
-the instructions after B's fence.  This synchronization is also used in
-the [C11 version of Chase-Lev deque][weak-chase-lev].  For more information on the cumulativity, see
-a [recent understanding of C11 SC atomics][scfix].
+As we will see, the correctness heavily depends on the interleaving nature of SC fences.
+Intuitively, it means that if a thread A's SC fence is performed before another thread B's SC fence,
+then A's fence happens before B's fence, and all information gathered before A's fence becomes
+visible after B's fence.  In that case, we say that the instructions before A's fence is *visible
+via SC fences to* the instructions after B's fence.  This synchronization is also used in
+the [C11 version of Chase-Lev deque][weak-chase-lev].  For more information on this interleaving
+property, see a [recent understanding of C11 SC atomics][scfix].
 
 Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
@@ -165,8 +165,8 @@ Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 Thread A's accesses to `obj`, for example, should happen before `obj`'s deallocation, because:
 
 - By assumption, the `unlink()`ing thread already removed all the references to the object from the
-memory on its point of view.  By cumulativity from `unlink()`'s SC fence (1. in the timeline) to
-`pin()`'s (2. in the timeline), `pin()`ned thread cannot access the old object `obj`.
+memory on its point of view.  By the interleaving property from `unlink()`'s SC fence (1. in the
+timeline) to `pin()`'s (2. in the timeline), `pin()`ned thread cannot access the old object `obj`.
 
 
 ### When `pin()`'s SC fence is performed before `unlink()`'s SC fence
@@ -198,10 +198,10 @@ Thread B's accesses to `obj`, for example, should happen before `obj`'s dealloca
 
 A reader may notice that the pseudocode differs from the current implementation of Crossbeam.  We
 believe the current implementation is buggy w.r.t. the C11 memory model, because it uses SC
-reads/writes that do not provide cumulativity.  As opposed to widely believed, SC loads and stores
-are relatively weak according to the C11 standard: in particular, the memory model designers intend
-to allow reordering of an SC load before a relaxed store, and that of SC writes after a relaxed
-load.  See a [recent paper on the SC semantics of C11][scfix] for more details.
+reads/writes that do not provide the interleaving property.  As opposed to widely believed, SC loads
+and stores are relatively weak according to the C11 standard: in particular, the memory model
+designers intend to allow reordering of an SC load before a relaxed store, and that of SC writes
+after a relaxed load.  See a [recent paper on the SC semantics of C11][scfix] for more details.
 
 ## Target-dependent implementation
 
