@@ -5,7 +5,6 @@ can be discussed. Such proposals take the form of a written document and
 end with a consensus among the following Crossbeam team members:
 
 - [arthurprs](https://github.com/arthurprs)
-- [aturon](https://github.com/aturon)
 - [jeehoonkang](https://github.com/jeehoonkang)
 - [schets](https://github.com/schets)
 - [stjepang](https://github.com/stjepang)
