@@ -9,6 +9,7 @@ end with a consensus among the following Crossbeam team members:
 - [jeehoonkang](https://github.com/jeehoonkang)
 - [schets](https://github.com/schets)
 - [stjepang](https://github.com/stjepang)
+- [Vtec234](https://github.com/Vtec234)
 
 Such proposals (RFCs: requests for comments) can also become a very useful form of
 documentation.
