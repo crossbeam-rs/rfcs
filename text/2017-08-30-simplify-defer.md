@@ -101,12 +101,12 @@ Let's fix both problems...
 ### `Deferred`
 
 Instead of having the triplet `defer_free`/`defer_drop`/`defer`, we'll have only `defer`
-with the same interface:
+with the same interface, but this time as a safe function:
 
 ```rust
 impl Scope {
     // Deferred execution of arbitrary function `f`.
-    unsafe fn defer<F: FnOnce() + Send + 'static>(&self, f: F);
+    fn defer<F: FnOnce() + Send + 'static>(&self, f: F);
 
     // ...
 }
