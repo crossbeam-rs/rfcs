@@ -121,12 +121,13 @@ Put differently, `Deferred` is to `FnOnce() + Send + 'static` what `SmallVec` is
 
 <details>
 <summary>Code (click to expand)</summary>
+
 ```rust
 use std::mem;
 use std::ptr;
 
 /// Provides methods to dispatch a call to a `FnOnce()` from a trait object.
-trait Callback {
+pub trait Callback {
     /// Calls the function from a trait object on the stack.
     ///
     /// This will copy `self`, call the function, and finally drop the copy.
@@ -170,30 +171,24 @@ struct TraitObject {
 }
 
 /// Some space to keep a `FnOnce()` object on the stack.
-type Data = [u64; 4];
-
-/// A small `FnOnce()` stored inline on the stack.
-struct InlineObject {
-    data: Data,
-    vtable: *mut (),
-}
+type Data = [usize; 3];
 
 /// A `FnOnce()` that is stored inline if small, or otherwise boxed on the heap.
 ///
 /// This is a handy way of keeping an unsized `FnOnce()` within a sized structure.
-enum Deferred {
-    OnStack(InlineObject),
-    OnHeap(Option<Box<Callback>>),
+pub struct Deferred {
+    vtable: *mut (),
+    data: Data,
 }
 
 impl Deferred {
     /// Constructs a new `Deferred` from a `FnOnce()`.
-    fn new<F: FnOnce() + Send + 'static>(f: F) -> Self {
+    pub fn new<F: FnOnce() + Send + 'static>(f: F) -> Self {
         let size = mem::size_of::<F>();
         let align = mem::align_of::<F>();
 
-        if size <= mem::size_of::<Data>() && align <= mem::align_of::<Data>() {
-            unsafe {
+        unsafe {
+            if size <= mem::size_of::<Data>() && align <= mem::align_of::<Data>() {
                 let vtable = {
                     let callback: &Callback = &f;
                     let obj: TraitObject = mem::transmute(callback);
@@ -201,38 +196,37 @@ impl Deferred {
                 };
 
                 let mut data = Data::default();
-                ptr::copy_nonoverlapping(
-                    &f as *const F as *const u8,
-                    &mut data as *mut Data as *mut u8,
-                    size,
-                );
-                mem::forget(f);
+                ptr::write(&mut data as *mut Data as *mut F, f);
 
-                Deferred::OnStack(InlineObject { data, vtable })
+                Deferred { vtable, data }
+            } else {
+                let mut data = Data::default();
+                let b: Box<Callback> = Box::new(f);
+                ptr::write(&mut data as *mut Data as *mut Box<Callback>, b);
+
+                Deferred {
+                    vtable: 0x1 as *mut (),
+                    data,
+                }
             }
-        } else {
-            Deferred::OnHeap(Some(Box::new(f)))
         }
     }
 
     /// Calls the function or panics if it was already called.
     #[inline]
-    fn call(&mut self) {
-        match *self {
-            Deferred::OnStack(ref mut obj) => {
-                let vtable = mem::replace(&mut obj.vtable, ptr::null_mut());
-                assert!(!vtable.is_null(), "cannot call `FnOnce` more than once");
+    pub fn call(&mut self) {
+        let vtable = mem::replace(&mut self.vtable, ptr::null_mut());
+        assert!(!vtable.is_null(), "cannot call `FnOnce` more than once");
 
-                unsafe {
-                    let data = &mut obj.data as *mut _ as *mut ();
-                    let obj = TraitObject { data, vtable };
-                    let callback: &Callback = mem::transmute(obj);
-                    callback.copy_and_call();
-                }
-            }
-            Deferred::OnHeap(ref mut opt) => {
-                let boxed = opt.take().expect("cannot call `FnOnce` more than once");
-                boxed.call_box();
+        unsafe {
+            if vtable as usize != 0x1 {
+                let data = &mut self.data as *mut _ as *mut ();
+                let obj = TraitObject { data, vtable };
+                let callback: &Callback = mem::transmute(obj);
+                callback.copy_and_call();
+            } else {
+                let b: Box<Callback> = ptr::read(&self.data as *const Data as *const Box<Callback>);
+                b.call_box();
             }
         }
     }
@@ -244,14 +238,14 @@ mod tests {
 
     #[test]
     fn smoke_on_stack() {
-        let a = [0u64; 1];
+        let a = [0usize; 1];
         let mut d = Deferred::new(move || drop(a));
         d.call();
     }
 
     #[test]
     fn smoke_on_heap() {
-        let a = [0u64; 10];
+        let a = [0usize; 10];
         let mut d = Deferred::new(move || drop(a));
         d.call();
     }
@@ -259,7 +253,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "cannot call `FnOnce` more than once")]
     fn twice_on_stack() {
-        let a = [0u64; 1];
+        let a = [0usize; 1];
         let mut d = Deferred::new(move || drop(a));
         d.call();
         d.call();
@@ -268,7 +262,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "cannot call `FnOnce` more than once")]
     fn twice_on_heap() {
-        let a = [0u64; 10];
+        let a = [0usize; 10];
         let mut d = Deferred::new(move || drop(a));
         d.call();
         d.call();
@@ -287,8 +281,16 @@ mod tests {
         let mut d = Deferred::new(move || assert_eq!(*a, [2, 3, 5, 7]));
         d.call();
     }
+
+    #[test]
+    fn long_slice_usize() {
+        let a: [usize; 5] = [2, 3, 5, 7, 11];
+        let mut d = Deferred::new(move || assert_eq!(a, [2, 3, 5, 7, 11]));
+        d.call();
+    }
 }
 ```
+
 </details>
 
 # Drawbacks
