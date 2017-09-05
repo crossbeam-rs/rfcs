@@ -8,8 +8,9 @@ region of shared memory.
 # Motivation
 
 The `unprotected` function provides a `Scope` without pinning the thread, where the caller thread is
-the only one accessing atomics. Assuming this, we can **immediately** deallocate and drop objects in
-an unprotected scope. However, even in an unprotected scope, the `defer_free` and `defer_drop`
+either (1) the only one accessing atomics, or (2) no threads are modifying atomics (think:
+reader-writer locks). Assuming this, we can **immediately** deallocate and drop objects in an
+unprotected scope. However, even in an unprotected scope, the `defer_free` and `defer_drop`
 functions defers freeing and dropping the objects until the scope is over. Even worse, if a lot of
 pieces of garbage are created, they are moved to the global garbage queue.
 
