@@ -59,7 +59,7 @@ impl Local {
 
     // `global` should be the one used to create the `Local`.
     pub unsafe fn pin<F, R>(&self, global: &Global, f: F)
-    where F: for<'scope> FnOnce(Scope<'scope>) -> R;
+    where F: FnOnce(&Scope) -> R;
     // fun f with a `Scope`
 
     // Once a `Local` is unregistered, `pin()` or `unregister()` should not be called later.
@@ -129,7 +129,7 @@ impl Collector {
 
 impl Handle {
     pub fn pin<F, R>(&self, f: F) 
-    where F: for<'scope> FnOnce(Scope<'scope>) -> R {
+    where F: FnOnce(&Scope) -> R {
         self.local.pin(&self.global, f)
     }
 
@@ -176,7 +176,7 @@ impl Drop for Handle {
 }
 
 pub fn pin<F, R>(f: F) 
-where F: for<'scope> FnOnce(Scope<'scope>) -> R {
+where F: FnOnce(&Scope) -> R {
     HANDLE.with(|handle| { handle.pin(&GLOBAL, f) })
 }
 ```
@@ -188,20 +188,21 @@ for more details.
 
 # Alternatives
 
-`Scope<'scope>` vs. `&'scope Scope`: Currently the type of scope is `Scope<'scope>`. It is possible
-to use more traditional reference type `&'scope Scope`, but it may incur some runtime cost of double
-indirection.
+`&'scope Scope` vs. `Scope<'scope>`: Currently we pass `&'scope Scope` as a witness that the current
+participant is pinned. The reference type may incur runtime overhead of nested indirection, but this
+author believes the overhead if bearable. You may avoid this overhead by using `Scope<'scope>`
+instead as the witness, but it is an unorthodox choice.
 
 `Arc<Global>` vs. `&Global`: Currently `Collector` is implemented as `Arc<Global>`, which incurs a
 runtime overhead of reference counting.  This author believes the overhead is negligible, because
 handle creation is likely in the cold path.  Using `&Global` instead of `Arc<Global>` might
-eliminate the runtime cost, but it will significantly complicates the API.
+eliminate the runtime cost, but it will significantly complicate the API.
 
 
 
 # Unresolved questions
 
-for `#[no_std]` environment, a long-term plan would be separating out what is dependent on `std`,
+For `#[no_std]` environment, a long-term plan would be separating out what is dependent on `std`,
 namely the default collector API and the `Collector` API, and what is not, namely the internal
 API. The proposed internal API is almost `std`-free except for the fact that `Global` and `Local`
 relies on the data structures in the standard library. This author believes we can finish this job
