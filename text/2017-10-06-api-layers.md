@@ -35,14 +35,14 @@ this branch in [this PR](https://github.com/crossbeam-rs/crossbeam-epoch/pull/21
 ## Internal API
 
 This is the lowest-level API to Crossbeam. First, we define a public struct `Global` and
-`Participant` that contain the global and local data for garbage collection:
+`Local` that contain the global and local data for garbage collection:
 
 ```rust
 struct Global {
   ...
 }
 
-struct Participant {
+struct Local {
   ...
 }
 ```
@@ -54,22 +54,25 @@ impl Global {
     pub fn new() -> Self;
 }
 
-impl Participant {
+impl Local {
     fn new(global: &Global) -> Self;
 
     pub fn pin<F, R>(&self, global: &Global, f: F)
     where F: for<'scope> FnOnce(Scope<'scope>) -> R;
     // fun f with a `Scope`
 
+    pub unsafe fn finalize(&self, global: &Global);
+    // deregisters itself from the global.
+
     ... // other methods
 }
 ```
 
-Note that `Participant::pin()` requires a reference to a `Global`.
+Note that `Local::pin()` requires a reference to a `Global`.
 
 When you want to embed a garbage collector in another systems library, e.g. logger, you first define
-its own `Global` and `Participant` structs, and embed `epoch::Global` and `epoch::Participant` in
-corresponding structs, as follows:
+its own `Global` and `Local` structs, and embed `epoch::Global` and `epoch::Local` in corresponding
+structs, as follows:
 
 ```rust
 pub mod Logger {
@@ -79,8 +82,8 @@ pub struct Global {
     ... // more global data
 }
 
-pub struct Participant {
-    epoch: epoch::Participant,
+pub struct Local {
+    epoch: epoch::Local,
     ... // more local data
 }
 
@@ -90,7 +93,7 @@ pub struct Participant {
 ```
 
 You can easily finish the internal logger API by implementing the methods of `Global` and
-`Participant` using `epoch`. You can build the `Logger` API and the default logger API in the same
+`Local` using `epoch`. You can build the `Logger` API and the default logger API in the same
 way as below.
 
 For a full example, see [this repository](https://github.com/jeehoonkang/handle-example-rs).
@@ -101,7 +104,7 @@ For a full example, see [this repository](https://github.com/jeehoonkang/handle-
 The public struct `Collector` is a general-purpose garbage collector with its own global epoch, and
 the public struct `Handle` is an abstraction of a participant in a collector.  `Collector` is a
 counted reference to a `Global`, and `Handle` is a tuple of a counted reference to a `Global` and a
-`Participant`:
+`Local`:
 
 ```rust
 struct Collector(Arc<Global>);
@@ -125,14 +128,14 @@ impl Collector {
 impl Handle {
     pub fn pin<F, R>(&self, f: F) 
     where F: for<'scope> FnOnce(Scope<'scope>) -> R {
-        self.participant.pin(&self.global, f)
+        self.local.pin(&self.global, f)
     }
 
     ... // other methods
 }
 ```
 
-Note that `Handle::pin()`, on contrary to `Participant::pin()`, does not require a reference to a
+Note that `Handle::pin()`, on contrary to `Local::pin()`, does not require a reference to a
 `Global`, because `Handle` already has a reference.
 
 See [the
@@ -146,11 +149,33 @@ There will be the default collector and per-thread handle to the default collect
 
 ```rust
 lazy_static! { pub GLOBAL: Global = Global::new(); }
-thread_local! { pub PARTICIPANT: Participant = Participant::new(&GLOBAL); }
+thread_local! { pub HANDLE: Handle = Handle::new(); }
+
+struct Handle(Local);
+
+impl Handle {
+    fn new() -> Self {
+        Self { 0: Local::new(&GLOBAL) }
+    }
+}
+
+impl Deref for Handle {
+    type Target = Local;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        self.finalize(&GLOBAL);
+    }
+}
 
 pub fn pin<F, R>(f: F) 
 where F: for<'scope> FnOnce(Scope<'scope>) -> R {
-    PARTICIPANT.with(|participant| { participant.pin(&GLOBAL, f) })
+    HANDLE.with(|handle| { handle.pin(&GLOBAL, f) })
 }
 ```
 
@@ -162,18 +187,17 @@ for more details.
 # Alternatives
 
 `Scope<'scope>` vs. `&'scope Scope`: Currently the type of scope is `Scope<'scope>`. It is possible
-to use more traditional reference type `&'scope Scope`, but it may incur some runtime cost.
+to use more traditional reference type `&'scope Scope`, but it may incur some runtime cost of double
+indirection.
 
-`Arc<Global>` vs. `&Global`: Currently `Collector` is implemented as `Arc<Global>`, which incurs
-runtime overhead of reference counting.  Using `&Global` will eliminate the runtime cost, but it
-will significantly complicates the API.
+`Arc<Global>` vs. `&Global`: Currently `Collector` is implemented as `Arc<Global>`, which incurs a
+runtime overhead of reference counting.  This author believes the overhead is negligible, because
+handle creation is likely in the cold path.  Using `&Global` instead of `Arc<Global>` might
+eliminate the runtime cost, but it will significantly complicates the API.
 
 
 
 # Unresolved questions
-
-For unknown reasons, there is a significant performance regression in the `pin_holds_advance()` test
-function.
 
 for `#[no_std]` environment, a long-term plan would be separating out what is dependent on `std`,
 namely the default collector API and the `Collector` API, and what is not, namely the internal
