@@ -64,7 +64,7 @@ impl Local {
 
     // Once a `Local` is unregistered, `pin()` or `unregister()` should not be called later.
     pub unsafe fn unregister(&self, global: &Global);
-    // deregisters itself from the global.
+    // unregisters itself from the global.
 
     ... // other methods
 }
@@ -193,8 +193,8 @@ participant is pinned. The reference type may incur runtime overhead of nested i
 author believes the overhead if bearable. You may avoid this overhead by using `Scope<'scope>`
 instead as the witness, but it is an unorthodox choice.
 
-`Arc<Global>` vs. `&Global`: Currently `Collector` is implemented as `Arc<Global>`, which incurs a
-runtime overhead of reference counting.  This author believes the overhead is negligible, because
+`Arc<Global>` vs. `&Global`: The proposed `Collector` is implemented as `Arc<Global>`, which incurs
+a runtime overhead of reference counting.  This author believes the overhead is negligible, because
 handle creation is likely in the cold path.  Using `&Global` instead of `Arc<Global>` might
 eliminate the runtime cost, but it will significantly complicate the API.
 
@@ -203,7 +203,9 @@ eliminate the runtime cost, but it will significantly complicate the API.
 # Unresolved questions
 
 For `#[no_std]` environment, a long-term plan would be separating out what is dependent on `std`,
-namely the default collector API and the `Collector` API, and what is not, namely the internal
-API. The proposed internal API is almost `std`-free except for the fact that `Global` and `Local`
-relies on the data structures in the standard library. This author believes we can finish this job
-once [the allocator trait is stabilized](https://github.com/rust-lang/rust/issues/32838).
+namely the default collector API, and what is not, namely the `Collector` API and the internal
+API. The proposed `Collector` and internal API is almost `std`-free except for the fact that (1) the
+`Collector` API uses `std::sync::Arc`, and (2) they rely on the data structures in the standard
+library. This author believes we can easily make it fully independent from `std` by (1)
+re-implementing `Arc` in `#[no_std]`, and (2) using a `#[no_std]` data structures after [the
+allocator trait is stabilized](https://github.com/rust-lang/rust/issues/32838).
