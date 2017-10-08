@@ -57,11 +57,13 @@ impl Global {
 impl Local {
     fn new(global: &Global) -> Self;
 
-    pub fn pin<F, R>(&self, global: &Global, f: F)
+    // `global` should be the one used to create the `Local`.
+    pub unsafe fn pin<F, R>(&self, global: &Global, f: F)
     where F: for<'scope> FnOnce(Scope<'scope>) -> R;
     // fun f with a `Scope`
 
-    pub unsafe fn finalize(&self, global: &Global);
+    // Once a `Local` is unregistered, `pin()` or `unregister()` should not be called later.
+    pub unsafe fn unregister(&self, global: &Global);
     // deregisters itself from the global.
 
     ... // other methods
@@ -169,7 +171,7 @@ impl Deref for Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        self.finalize(&GLOBAL);
+        unsafe { self.unregister(&GLOBAL); }
     }
 }
 
