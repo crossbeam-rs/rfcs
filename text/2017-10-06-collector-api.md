@@ -1,6 +1,6 @@
 # Summary
 
-This RFC introduces three layers of API for supporting diversified use cases.
+This RFC introduces the `Collector` API for supporting diversified use cases.
 
 
 # Motivation
@@ -19,9 +19,8 @@ allocator and thread management environment.  Note that it is often a part of th
 thus this use case requires (at least a part of) Crossbeam to be implemented in the `#[no_std]`
 environment. Likewise, Crossbeam currently does not support this use case.
 
-In order to support these diversified use cases, this author proposes to generalize the API by
-introducing an API layer for each use case: (1) **the default garbage collector API** for the first
-use case; (2) **`Collector` API** for the second one; and (3) **internal API** for the third one.
+In order to support these diversified use cases, this author proposes to introduce the **`Collector`
+API**.
 
 
 
@@ -32,86 +31,18 @@ branch](https://github.com/jeehoonkang/crossbeam-epoch/tree/handle). You can fin
 this branch in [this PR](https://github.com/crossbeam-rs/crossbeam-epoch/pull/21).
 
 
-## Internal API
-
-This is the lowest-level API to Crossbeam. First, we define a public struct `Global` and
-`Local` that contain the global and local data for garbage collection:
-
-```rust
-struct Global {
-  ...
-}
-
-struct Local {
-  ...
-}
-```
-
-And implement the following methods:
-
-```rust
-impl Global {
-    pub fn new() -> Self;
-}
-
-impl Local {
-    fn new(global: &Global) -> Self;
-
-    // `global` should be the one used to create the `Local`.
-    pub unsafe fn pin<F, R>(&self, global: &Global, f: F)
-    where F: FnOnce(&Scope) -> R;
-    // fun f with a `Scope`
-
-    // Once a `Local` is unregistered, `pin()` or `unregister()` should not be called later.
-    pub unsafe fn unregister(&self, global: &Global);
-    // unregisters itself from the global.
-
-    ... // other methods
-}
-```
-
-Note that `Local::pin()` requires a reference to a `Global`.
-
-When you want to embed a garbage collector in another systems library, e.g. logger, you first define
-its own `Global` and `Local` structs, and embed `epoch::Global` and `epoch::Local` in corresponding
-structs, as follows:
-
-```rust
-pub mod Logger {
-
-pub struct Global {
-    epoch: epoch::Global,
-    ... // more global data
-}
-
-pub struct Local {
-    epoch: epoch::Local,
-    ... // more local data
-}
-
-...
-
-}
-```
-
-You can easily finish the internal logger API by implementing the methods of `Global` and
-`Local` using `epoch`. You can build the `Logger` API and the default logger API in the same
-way as below.
-
-For a full example, see [this repository](https://github.com/jeehoonkang/handle-example-rs).
-
 
 ## `Collector` API
 
-The public struct `Collector` is a general-purpose garbage collector with its own global epoch, and
-the public struct `Handle` is an abstraction of a participant in a collector.  `Collector` is a
-counted reference to a `Global`, and `Handle` is a tuple of a counted reference to a `Global` and a
-`Local`:
+In this layer of API, the public struct `Collector` is a general-purpose garbage collector with its
+own global epoch, and the public struct `Handle` is an abstraction of a participant in a collector.
+`Collector` is a counted reference to a the global data for garbage collection (`Global`), and
+`Handle` is a tuple of a counted reference to a global data and a local data (`Local`):
 
 ```rust
-struct Collector(Arc<Global>);
+pub struct Collector(Arc<Global>);
 
-struct Handle {
+pub struct Handle {
     global: Arc<Global>,
     local: Local,
 }
@@ -202,10 +133,15 @@ eliminate the runtime cost, but it will significantly complicate the API.
 
 # Unresolved questions
 
+Both the `Collector` API and the default collector relies on the hidden `Global` and `Local`
+structs. It might be beneficial to expose this internal API for the last bit of optimization, even
+though this API is significantly more complicated than the `Collector` API. Unfortunately, currently
+we are short of concrete use cases for precisely evaluation of the tradeoff.
+
 For `#[no_std]` environment, a long-term plan would be separating out what is dependent on `std`,
-namely the default collector API, and what is not, namely the `Collector` API and the internal
-API. The proposed `Collector` and internal API is almost `std`-free except for the fact that (1) the
-`Collector` API uses `std::sync::Arc`, and (2) they rely on the data structures in the standard
-library. This author believes we can easily make it fully independent from `std` by (1)
-re-implementing `Arc` in `#[no_std]`, and (2) using a `#[no_std]` data structures after [the
-allocator trait is stabilized](https://github.com/rust-lang/rust/issues/32838).
+namely the default collector API, and what is not, namely the `Collector` API. The proposed
+`Collector` API is almost `std`-free except for the fact that (1) the `Collector` API uses
+`std::sync::Arc`, and (2) they rely on the data structures in the standard library. This author
+believes we can easily make it fully independent from `std` by (1) re-implementing `Arc` in
+`#[no_std]`, and (2) using a `#[no_std]` data structures after [the allocator trait is
+stabilized](https://github.com/rust-lang/rust/issues/32838).
