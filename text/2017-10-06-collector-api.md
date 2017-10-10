@@ -82,17 +82,17 @@ There will be the default collector and per-thread handle to the default collect
 
 ```rust
 lazy_static! { pub GLOBAL: Global = Global::new(); }
-thread_local! { pub HANDLE: Handle = Handle::new(); }
+thread_local! { pub HANDLE: DefaultHandle = DefaultHandle::new(); }
 
-struct Handle(Local);
+struct DefaultHandle(Local);
 
-impl Handle {
+impl DefaultHandle {
     fn new() -> Self {
         Self { 0: Local::new(&GLOBAL) }
     }
 }
 
-impl Deref for Handle {
+impl Deref for DefaultHandle {
     type Target = Local;
 
     fn deref(&self) -> &Self::Target {
@@ -100,7 +100,7 @@ impl Deref for Handle {
     }
 }
 
-impl Drop for Handle {
+impl Drop for DefaultHandle {
     fn drop(&mut self) {
         unsafe { self.unregister(&GLOBAL); }
     }
