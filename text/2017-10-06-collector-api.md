@@ -81,34 +81,12 @@ more details.
 There will be the default collector and per-thread handle to the default collector:
 
 ```rust
-lazy_static! { pub GLOBAL: Global = Global::new(); }
-thread_local! { pub HANDLE: DefaultHandle = DefaultHandle::new(); }
-
-struct DefaultHandle(Local);
-
-impl DefaultHandle {
-    fn new() -> Self {
-        Self { 0: Local::new(&GLOBAL) }
-    }
-}
-
-impl Deref for DefaultHandle {
-    type Target = Local;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Drop for DefaultHandle {
-    fn drop(&mut self) {
-        unsafe { self.unregister(&GLOBAL); }
-    }
-}
+lazy_static! { pub COLLECTOR: Collector = Collector::new(); }
+thread_local! { pub HANDLE: Handle = COLLECTOR.handle(); }
 
 pub fn pin<F, R>(f: F) 
 where F: FnOnce(&Scope) -> R {
-    HANDLE.with(|handle| { handle.pin(&GLOBAL, f) })
+    HANDLE.with(|handle| { handle.pin(f) })
 }
 ```
 
