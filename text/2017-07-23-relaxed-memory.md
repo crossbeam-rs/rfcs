@@ -162,16 +162,15 @@ Now we consider two cases on the order of `unlink()`'s and `pin()`'s SC fence.
 
 ### When `unlink()`'s SC fence is performed before `pin()`'s SC fence
 
-Thread A's accesses to `obj`, for example, should happen before `obj`'s deallocation, because:
-
-- By assumption, the `unlink()`ing thread already removed all the references to the object from the
+Thread A's accesses to `obj`, for example, should happen before `obj`'s deallocation. Because by
+assumption, the `unlink()`ing thread already removed all the references to the object from the
 memory on its point of view.  By the interleaving property from `unlink()`'s SC fence (1. in the
 timeline) to `pin()`'s (2. in the timeline), `pin()`ned thread cannot access the old object `obj`.
 
 
 ### When `pin()`'s SC fence is performed before `unlink()`'s SC fence
 
-Thread B's accesses to `obj`, for example, should happen before `obj`'s deallocation, because:
+Thread B's accesses to `obj`, for example, should happen before `obj`'s deallocation. Because:
 
 - Let's consider the invocation of `try_advance()` that actually advances the global epoch to `X+2`.
   `unlink()`'s SC fence (1. in the timeline) is performed before `try_advance()`'s SC fence (4. in
@@ -179,9 +178,11 @@ Thread B's accesses to `obj`, for example, should happen before `obj`'s dealloca
   visible via SC fences to `unlink(): 'L11` that reads `X` from `EPOCH`.  This is a contradiction.
 
 - By transitivity, `pin()`'s SC fence (3. in the timeline) is performed before `try_advance()`'s SC
-  fence (4. in the timeline).  Thus the store to the local epoch at `pin(): 'L21` is visible via SC
-  fences to the load from it at `try_advance(): 'L43`, and `'L43` should read from what is written
-  at `'L21` or a more recent value than that.
+  fence (4. in the timeline). Since the `pin()`ning thread registered itself in the linked list
+  `threads` before pinning, the iteration over `threads` at `'try_advance(): 'L42` should visit the
+  pinning thread. Then the store to the local epoch at `pin(): 'L21` is visible via SC fences to the
+  load from it at `try_advance(): 'L43`, and `'L43` should read from what is written at `'L21` or a
+  more recent value than that.
 
 - In order to reach `try_advance(): 'L47` and increment the global epoch, `'L43` should not read
   from what is written at `'L21`.  Instead it should read from what is written at `unpin(): 'L30` or a
