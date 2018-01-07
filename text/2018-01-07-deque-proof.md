@@ -823,6 +823,13 @@ success case for the CAS at `'L213` (as done in [this paper][chase-lev-weak]), o
 `Acquire` ordering for the failure case for the CAS at `'L213`. We chose (3) here, because we
 believe it incurs the least performance overhead.
 
+Even though `Release`/`Acquire` orderings are enough for the success/failure cases of the CAS at
+`'L213`, C11 (and effectively also LLVM and Rust) requires that "the failure argument shall not be
+memory\_order\_release nor memory\_order\_acq\_rel. The failure argument shall be no stronger than
+the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So we used `AcqRel`/`Acquire` in the
+implementation. I think this C11 requirement may be failsafe for most use cases, but is actually
+inefficient for the Chase-Lev deque.
+
 
 ## Comparison to Target-dependent Implementations
 
@@ -847,3 +854,4 @@ one. Probably `Consume` is relevant here. These further optimizations are left a
 [linearizability]: https://en.wikipedia.org/wiki/Linearizability
 [cppatomic]: http://en.cppreference.com/w/cpp/atomic/atomic
 [n3710]: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2013/n3710.html
+[c11]: www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf
