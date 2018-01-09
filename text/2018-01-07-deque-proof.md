@@ -167,7 +167,7 @@ fn resize(&self, cap_new) {
 pub fn steal(&self) -> Option<T> {
     'L401: let mut t = self.top.load(Relaxed);
 
-    'L402: let guard = epoch::pin_fence(); // epoch::pin(), but forces fence(SeqCst)
+    'L402: let guard = epoch::pin_fence(); // epoch::pin(), but issue fence(SeqCst) even if it is re-entering
     'L403: loop {
     'L404:     let b = self.bottom.load(Acquire);
     'L405:     if b - t <= 0 {
@@ -201,7 +201,7 @@ race and invalid pointer dereference.
 
 In the C/C++11 standards, if two threads race on a non-atomic object, i.e. they concurrently access
 it and at least one of them writes to it, then the program's behavior is undefined. Unfortunately,
-in fact, `fn push(): 'L107` and `fn steal(): 'L408` may race on the contents of the `buffer`. For
+in fact, `fn push(): 'L109` and `fn steal(): 'L409` may race on the contents of the `buffer`. For
 example, the scheduler may stop a `steal()` invocation right after `'L402` so that `t` read in
 `'L401` may be arbitrarily stale. Now, suppose that in a concurrent `push()` invocation, `b` equals
 to `t + buffer.get_capacity()` and it is overwriting a value to `buffer`'s `(b %
@@ -339,12 +339,14 @@ by inserting stealers' invocations into it.
 Note that every owner's invocation writes to `bottom`, and every stealers' invocation reads from
 `bottom` at `'L404`. We classify the stealers' invocations into "groups" `{G_i}` as follows:
 
-- For a stealer's invocation `S`, if `S` reads the initial value from `bottom`, then `S ∈ G_(-1)`.
+- For a stealer's invocation `S`, if `S` reads the initial value from `bottom`, then `S ∈
+  G_(-1)`. Otherwise, let `O_i` be the owner's invocation that writes to `bottom` a value read by
+  `S`.
 
-- Otherwise, let `O_i` be the owner's invocation that writes to `bottom` a value read by `S`.
+- If `S` returns `EMPTY`, then `S ∈ G_i`.
 
-- If `O_i` is not a `pop()` taking the "irregular" path (i.e. not entering `'L218`) and `S` returns
-  a value (not `EMPTY`), then `S ∈ G_(i-1)`; otherwise, then `S ∈ G_i`.
+- Otherwise (i.e. `S` returns a value), let `j` be such an index that `O_(j+1)`, ..., `O_i` are
+  `pop()` taking the "irregular" path (i.e. not entering `'L218`) and `O_j` is not. Then `S ∈ G_j`.
 
 We will insert the invocations in `G_i` between `O_i` and `O_(i+1)`. Inside a group `G_i`, we give
 the linearization order as follows:
@@ -363,7 +365,7 @@ the linearization order as follows:
 
 ### Auxiliary Lemma
 
-- > Let `WF_i` and `WL_i` be `O_i`'s first and last write to `bottom`.
+Let `WF_i` and `WL_i` be `O_i`'s first and last write to `bottom`.
 
 - > (VIEW-OWNER): For arbitrary `i`, since `O_(i-1)` wrote `WF_(i-1), WL_(i-1)` and `O_i` wrote
   `WF_i, WL_i`, we have `Timestamp(WL_(i-1)) <= view_beginning(O_i)[bottom] <
@@ -371,8 +373,7 @@ the linearization order as follows:
   Timestamp(WF_(i+1))`.
 
 - > (VIEW-STEAL): For arbitrary `i` and `S ∈ G_i`, since `S` read `WF_i` or a later value, we have
-  `Timestamp(WF_i) <= view_end(S)[bottom]`. Also, since `S` read `WL_(i+1)` or an earlier value, we
-  have `view_beginning(S)[bottom] <= Timestamp(WL_(i+1))`.
+  `Timestamp(WF_i) <= view_end(S)[bottom]`.
 
 - > (IRREGULAR-TOP): Suppose `O_i` is `pop()` taking the irregular path. Let `x` be the value `O_i`
   read from `bottom` at `'L201`. Then [timestamp of `top = x`] <= `view_end(O_(i+1))[top]`.
@@ -382,8 +383,8 @@ the linearization order as follows:
   tries to compare-and-swap (CAS) `top` from `y` to `y+1` at `'L213`. Regardless of whether the CAS
   succeeds, `O_i` reads or writes a value of `top >= x`.
 
-  It is worth nothing that it is necessary for the CAS at `'L213` to be strong for this lemma to
-  hold.
+  It is worth nothing that for this lemma to hold, it is necessary for the CAS at `'L213` to be
+  strong, i.e. it the CAS does not spuriously fail.
 
 - > (IRREGULAR-STEAL): Suppose `O_i` is `pop()` taking the irregular path, and `S` is `steal()` that
   reads from `bottom` a value written by `O_i` and returns a value. Let `x` be the value `O_i` read
@@ -397,11 +398,12 @@ the linearization order as follows:
     In order for `S` to read `bottom = x` at `'L404` and `O_i` to read `top >= x` at `'L204` at the
     same time, either `S`'s write to `top` at `'L410` should be promised before reading `bottom` at
     `'L404` or `O_i`'s write to `bottom` at `'L207` should be promised before reading `top` at
-    `'L204`. But this is impossible: `S`'s write to `top` at `'L410` is a release-store; and in
-    order for `O_i` to promise to write `bottom = x` at `'L207`, `O_i` should read `top = x-1` at
-    `'L204` and then execute the CAS at `'L213` in certification, but (1) it is impossible to
-    succeed the CAS in arbitrary future memories, and (2) after failing the CAS and acquiring
-    `top >= x`, it is impossible to fulfill the promise in arbitrary future memories.
+    `'L204`. But this is impossible. For the former, `S`'s write to `top` at `'L410` is a
+    release-store. For the latter, in order for `O_i` to promise to write `bottom = x` at `'L207`,
+    `O_i` should read `top = x-1` at `'L204` and then execute the CAS at `'L213` in
+    certification. But a certain future memory mandates the CAS to fail, acquiring an arbitrarily
+    high view, after which it is impossible to fulfill the promise. In short, there is a semantic
+    dependency from `O_i`'s read from `top` at `'L204` to `O_i`'s write to `bottom` at `'L207`.
 
   + Case `O_i` executes the CAS at `'L213`.
 
@@ -424,39 +426,41 @@ For `(VIEW)`, it is sufficient to prove that:
 
 (Note that what would be `(VIEW-OWNER-OWNER)` is obvious.)
 
-#### Proof of `(VIEW-OWNER-STEAL)`.
+#### Proof of `(VIEW-OWNER-STEAL)`
 
 By `(VIEW-OWNER)` and `(VIEW-STEAL)`, we have `view_beginning(O_i)[bottom] < Timestamp(WF_i) <=
 Timestamp(WF_j) <= view_end(S)[bottom]`. Thus it is not the case that `S -view-> O_i`.
 
-#### Proof of `(VIEW-STEAL-OWNER)`.
+#### Proof of `(VIEW-STEAL-OWNER)`
 
-By `(VIEW-OWNER)` and `(VIEW-STEAL)`, we have `view_beginning(S)[bottom] <= Timestamp(WL_(i+1)) <=
-Timestamp(WL_j) <= view_end(O_j)[bottom]`. If `view_beginning(S)[bottom] < view_end(O_j)[bottom]`,
-then it is not the case that `O_j -view-> S`.
+If `S` returns `EMPTY`, then `view_beginning(S)[bottom] <= Timestamp(WL_i) < Timestamp(WL_j) <=
+view_end(O_j)[bottom]`. Now suppose `S` returns a value. Let `O_k` be the owner invocation that
+writes to `bottom` a value read by `S` at `'L404`. Then for all `l ∈ (i, k]`, `O_k` is `pop()`
+taking the irregular path. If `k < j`, then `view_beginning(S)[bottom] <= Timestamp(WL_k) <
+Timestamp(WL_j) <= view_end(O_j)[bottom]`. Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values
+`O_j` read from `bottom` at `'201` and `top` at `'204`, respectively. Then we have `x-1 <= y` by the
+fact that `O_j` is a `pop()` taking the irregular path, `view_beginning(S)[top] < x-1` by
+`(IRREGULAR-STEAL)`, and `x <= view_end(O_j)[top]` by `(IRREGULAR-TOP)`. Thus it is not the case
+that `S -view-> O_i`.
 
-Now suppose otherwise. Then we have `j = i+1` and `view_beginning(S)[bottom] = Timestamp(WL_(i+1)) =
-view_end(O_(i+1))[bottom]`, so `S` read `bottom` from `WL_(i+1)` and returns a value, and `O_(i+1)`
-is `pop()` taking the irregular path. Let `x` be the value `O_(i+1)` read from `bottom` at
-`'L201`. By `(IRREGULAR-STEAL)`, `S` wrote a value `< x` to `top`, and by `(IRREGULAR-TOP)`,
-`O_(i+1)` read a value `>= x` from `top`. Thus we have `view_beginning(S)[top]` < [the timestamp of
-`top = x`] <= `view_end(O_(i+1))[top]`, and it is not the case that `O_(i+1) -view-> S`.
+#### Proof of `(VIEW-STEAL-INTER-GROUP)`
 
-#### Proof of `(VIEW-STEAL-INTER-GROUP)`.
+- Case 1: `O_(i+1)`, ..., `O_j` are all `pop()` taking the irregular path.
 
-By `(VIEW-OWNER)` and `(VIEW-STEAL)`, we have `view_beginning(S_i)[bottom] <= Timestamp(WL_(i+1))`
-and `Timestamp(WF_j) <= view_end(S_j)[bottom]`. Thus if either `i+1 < j`,
-`view_beginning(S_i)[bottom] < Timestamp(WF_(i+1))` or `Timestamp(WL_j) < view_end(S_j)[bottom]`
-holds, then it is not the case that `S_j -view-> S_i`.
+  Then `S_j` should have returned `EMPTY`. If `S_i` read from `WF_i` or `WL_i`, then
+  `view_beginning(S_i)[bottom] <= Timestamp(WL_i) < Timestamp(WF_j) <= view_ending(S_j)[bottom]`,
+  and the conclusion follows. Otherwise, let `x` be the value `O_(i+1)` read from `bottom` at
+  `'L201`. Then we have `view_beginning(S_i)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x-1 <=
+  view_end(S_j)[top]` from the fact that `S_j` read `x-1` or `x` from `bottom` at `'L404` and
+  returns `EMPTY`.
 
-Now suppose otherwise. Then `j = i+1`, `O_(i+1)` is `pop()` taking the irregular path, `S_i` and
-`S_j` both read from `bottom` values written by `O_(i+1)`, `S_i` returns a value, and `S_j` returns
-`EMPTY`. Let `x` be the value of `bottom` read by `O_(i+1)` at `'L201`, and `y` be the value of
-`top` written by `S`. By `(IRREGULAR-STEAL)`, we have `y < x`. So we have `view_beginning(S_i)[top]
-< Timestamp(top, y) <= Timestamp(top, x-1) <= view_end(S_j)[top]`, and it is not the case that `S_j
--view-> S_i`.
+- Case 2: Otherwise.
 
-#### Proof of `(VIEW-STEAL-INTRA-GROUP)`.
+  Let `O_k` be such an invocation that is not `pop()` taking the irregular path and `k ∈ (i,
+  j]`. Then we have `view_beginning(S_i)[bottom] < Timestamp(WL_k) <= view_ending(S_j)[bottom]`, and
+  the conclusion follows.
+
+#### Proof of `(VIEW-STEAL-INTRA-GROUP)`
 
 - Case 1: `S, S' ∈ STEAL`.
 
@@ -467,16 +471,17 @@ Now suppose otherwise. Then `j = i+1`, `O_(i+1)` is `pop()` taking the irregular
 
 - Case 3: `S ∈ STEAL` and `S' ∈ STEAL_EMPTY`.
 
-  Let `b` be the value of `WL_i`; `x` (and `x'`) be the values `S` (and `S'`, respectively) read
-  from `bottom` at `'L404`; and `y` (and `y'`) be the values `S` (and `S'`, respectively) read from
-  `top` at `'L401`. Since `S' ∈ STEAL`, we have `y < x`. Since `S' ∈ STEAL_EMPTY`, we have `b-1 <=
-  x' <= y'`.
+  Let `b` be the value of `WL_i`; `x` and `x'` be the values `S` and `S'` read from `bottom` at
+  `'L404`, respectively; and `y` and `y'` be the values `S` and `S'` read from `top` at `'L401`,
+  respectively. Since `S' ∈ STEAL`, we have `y < x`. Since `S' ∈ STEAL_EMPTY`, we have `b-1 <= x' <=
+  y'`.
 
-  It is sufficient to prove that `y < y'` holds. From `S ∈ STEAL`, we know that either (1) `S` read
-  from `bottom` a value written by `O_(i+1)`, and `O_(i+1)` is `pop()` taking the irregular path; or
-  (2) `S` read a value from `bottom` written by `O_i`, and `O_i` is not `pop()` taking the irregular
-  path. If the former is the case, then we have `y+1 < b` by `(IRREGULAR-STEAL)` so that `y <= b-2 <
-  b-1 <= x' <= y'`. If the latter is the case, then `y < x = b = x' <= y'`.
+  It is sufficient to prove that `y < y'` holds.
+
+  + Case 3-1: `S` read a value from `bottom` written by `O_i`. Then `y < x = b = x' <= y'`.
+  + Case 3-2: `S` read a value from `bottom` written by `O_j` for some `j > i`. Then for all `k ∈
+              (i, j]`, `O_k` is `pop()` taking the irregular path, and we have `y+1 < b` by
+              `(IRREGULAR-STEAL)`. Thus `y <= b-2 < b-1 <= x' <= y'`.
 
 
 ## Proof of `(SEQ)` and `(SYNC)`
@@ -485,14 +490,19 @@ Let `I_0`, ..., `I_(n-1)` be the invocations sorted according to the constructed
 order. In addition to `(SEQ)` and `(SYNC)`, we will simultaneously prove the following conditions
 with the same existentially quantified values of `t_i, b_i, A_i`:
 
-> `(CONTENT)`: for all `i` and `x ∈ [t_i, b_i)`, there exists a `push()` invocation into `x` in
-> `I_0, ..., I_(i-1)`; and `A_i[x]` is the value inserted by the last such invocation.
+> `(BOTTOM)`: If `I_i` is an owner invocation, `b_i` equals to the value `I_i` read from `bottom` at
+> `'L101` or `'L201`.
 >
-> `(TOP)`: `t_i` equals to the value of the last write to `top` in `I_0`, ..., `I_(i-1)`.
+> `(TOP)`: `t_i` equals to the value of the last write to `top` in `I_0`, ..., `I_(i-1)`. Also, for
+> each `x ∈ [0,t_i)`, there is exactly one invocation in `I_0`, ..., `I_(i-1)` that performs a CAS
+> that updates `top = x` to `x+1`.
+>
+> `(CONTENTS)`: for all `i` and `x ∈ [t_i, b_i)`, there exists a `push()` invocation into `x` in
+> `I_0, ..., I_(i-1)`; and `A_i[x]` is the value inserted by the last such invocation.
 
-We prove that `{I_i}` satisfies `(SEQ)`, `(SYNC)`, `(CONTENT)`, and `(TOP)` by induction on `n`:
-suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and let's prove that `I_i` also satisfies
-those conditions. We prove for each case of `I_i`.
+We prove that `{I_i}` satisfies `(SEQ)`, `(SYNC)`, `(BOTTOM)`, `(TOP)`, and `(CONTENTS)` by
+induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and let's prove that
+`I_i` also satisfies those conditions. We prove for each case of `I_i`.
 
 - Case 1: `I_i` is `push()`.
 
@@ -500,58 +510,59 @@ those conditions. We prove for each case of `I_i`.
 
 - Case 2: `I_i` is `pop()` taking the regular path.
 
-  Let `x` and `y` be the values `I_i` read from `bottom` at `'L201` and `top` at `'L204`,
-  respectively. Then we have `x = b_i`, as `bottom` is modified only by the writer. Since `I_i` is
+  Let `j` be such an index that `I_i = O_j`. Let `x` and `y` be the values `I_i` read from `bottom`
+  at `'L201` and `top` at `'L204`, respectively. By `(BOTTOM)`, we have `x = b_i`. Since `I_i` is
   taking the regular path, we have `y+2 <= x`. We also prove `t_i <= y+1`. Consider the invocation
   `I` that writes `y+2` to `top`, if exists. (Otherwise, `t_i <= y+1` should obviously hold.) If `I`
   is `pop()`, then `I` should be linearized after `I_i` thanks to the coherence of `top`; if `I` is
-  `steal()`, by the synchronization of the seqcst fences from `I_i` to `I` via `top`, `I` should load a
-  value that is coherence-after-or `WL_j` from `bottom`, where `j` is such an index that `I_i =
-  O_j`. Thus `I` is linearized after `I_i`, and `t_i <= y+1` holds.
+  `steal()`, then by the synchronization of the seqcst-fences from `I_i` to `I` via `top`, the value
+  `I` read from `bottom` should be coherence-after-or `WL_j`. Thus `I` is linearized after `I_i`,
+  and `t_i <= y+1` holds.
 
   Then we have `t_i <= y+1 < y+2 <= x = b_i`, and it is legit to pop a value from the bottom end of
   the deque and decrease `bottom`.
 
   It remains to prove that `I_i` returns the right value. Let `O_k` be the last `push()` operation
-  in `I_0`, ..., `I_(i-1)` that pushes to the index `x` and writes `bottom = x+1`, and `v` be the
-  value `O_k` pushes. Let's prove that `I_i` returns `v`.
+  in `I_0`, ..., `I_(i-1)` that pushes to the index `x-1` and writes `bottom = x`, and `v` be the
+  value `O_k` pushes. Thanks to `(CONTENTS)`, it is sufficient to prove that `I_i` returns `v`.
 
   For all `l`, let `WB_l` be the value of `buffer` at the end of the invocation `O_l`. Also, for all
-  `z`, let `WC[l, z]` be the `z`-th contents of the buffer `WB_l` at the end of the invocation
+  `z`, let `WC_(l, z)` be the `z`-th contents of the buffer `WB_l` at the end of the invocation
   `O_l`. They are well-defined since the pointer `buffer` and the contents of the buffer are
   modified only by the owner.
 
-  Let's prove by induction that for all `l ∈ [k, j)`, `WC[l, x % size(WB_l)] = v`. Since `O_k` just
-  pushed a value to `x`, it trivially holds for the base case `l = k`. Now suppose that it holds for
-  `l = m` for some `m ∈ [k, j-1)` and prove that it holds for `l = m+1`. Since `O_k` is the last
-  operation that writes to the index `x`, `O_(m+1)` is not a regular `pop()` that writes `bottom =
-  x`. Let `z` and `w` be the values `O_(m+1)` read from `bottom` at `'L301` and `top` at `'L302`,
-  respectively, if `O_(m+1)` is resizing. Then we have `z > x` by the choice of `O_k`, and `w <= x`
-  by the coherence on `top`. Thus `WC[m, x % size(WB_m)] = v` is copied to `WC[m+1, x %
-  size(WB_(m+1))]`.
+  Let's prove by induction that for all `l ∈ [k, j)`, `WC_(l, (x-1) % size(WB_l)) = v`. Since `O_k`
+  just pushed a value to the index `x-1`, it trivially holds for the base case `l = k`. Now suppose
+  that it holds for `l = m` for some `m ∈ [k, j-1)` and prove that it holds for `l = m+1`. Since
+  `O_k` is the last operation that writes `bottom = x` and `I_i` writes `bottom = x-1`, `O_(m+1)` is
+  not a regular `pop()` that writes `bottom = x-1`. Let `z` and `w` be the values `O_(m+1)` read
+  from `bottom` at `'L301` and `top` at `'L302`, respectively, if `O_(m+1)` is resizing. Then we
+  have `z >= x` by the choice of `O_k`, and `w <= y < x` by the coherence on `top`. Thus `WC_(m,
+  (x-1) % size(WB_m)) = v` is copied to `WC_(m+1, (x-1) % size(WB_(m+1)))`.
 
-  Thus `I_i = O_j` returns `WC[j-1, x % size(WB_(j-1))] = v`.
+  Thus `I_i = O_j` returns `WC_(j-1, (x-1) % size(WB_(j-1)))`, which equals to `v`.
 
 - Case 3: `I_i` is `pop()` taking the irregular path.
 
-  Let `x` and `y` be the values `I_i` read from `bottom` at `'L201` and `top` at `'L204`,
-  respectively. Similarly to the above case, we have `x = b_i`. Since `I_i` takes the irregular
-  path, we have `y >= x-1`.
+  Let `j` be such an index that `I_i = O_j`. Let `x` and `y` be the values `I_i` read from `bottom`
+  at `'L201` and `top` at `'L204`, respectively. By `(BOTTOM)`, we have `x = b_i`. Since `I_i` takes
+  the irregular path, we have `y >= x-1`.
 
-  + Case `y >= x`.
+  + Case `y >= x`, or [`y = x-1` and the CAS at `'L213` fails].
+
+    If the former is the case, then `I_i` writes `bottom = x` at `'L208`. If the latter is the case,
+    then `I_i` read from `top` a value `>= x` at `'L213`, and then writes `bottom = x` at
+    `'L216`. In either case, it reads `top >= x` and then writes `bottom = x`.
 
     We prove `x <= t_i` as follows. Consider the invocation `I` that writes `x` to `top`. If `I` is
-    `pop()`, then `I` should be linearized before `I_i` thanks to the coherence of `top`. Suppose
-    `I` is `steal()`. Let `W` be the message `I` read from `bottom` at `'L404`. Then since `I`
-    returns a value, we have `x <= Value(W)`. It is sufficient to prove that `W <= WL_j` in the
-    coherence order, where `j` is such an index that `I_i = O_j`. Let's suppose otherwise. If
-    `O_(j+1)` is `pop()`, then `W ≠ WF_(j+1)` since `Value(WF_(j+1)) = x-1`. Otherwise, `W` is
-    either a release-store, or there is an seqcst fence between `I_i`'s read from `top` at `'L204` and
-    `W`. But this is impossible: in order for `I` to read from `W` at `'L404` and `I_i` to read `top
-    >= x` at `'L204` at the same time, either `I`'s write to `top` at `'L410` should be promised
-    before reading `bottom` at `'L404` or `W` should be promised before `I_i` reading `top` at
-    `'L204`, but the former is a release-store and the latter is either a release-store or after an
-    seqcst fence.
+    `pop()`, then `I` should be linearized before `I_i` thanks to the coherence of `top`. Now
+    suppose `I` is `steal()`. Let `O_k` be the first `push()` invocation in `O_(j+1)`, ...,
+    `O_(o-1)`. (If no such invocation exists, let `k = o`.) By the coherence of `top`, all of `O_i`,
+    ..., `O_(k-1)` should be `pop()` taking the irregular path. Thus it is sufficient to prove that
+    the value `I` read from `bottom` at `'L404` should be coherence-before `WF_k`. Suppose
+    otherwise. Then there is a release-acquire synchronization from `WF_k` to `I`'s read from
+    `bottom` at `'L404`, so `O_j`'s read from `top` at `'L204` or `'L213` is coherence-before `I`'s
+    write to `top` at `'L410`. But this contradicts with the assumption.
 
     Thus we have `b_i = x <= t_i`, and it is legit for `I_i` to go to `'L207`, restore the original
     value of `bottom`, and return `EMPTY`.
@@ -569,35 +580,24 @@ those conditions. We prove for each case of `I_i`.
     <!-- R t >=x -->
     <!-- W b x -->
 
-  + Case `y = x-1`.
+  + Case `y = x-1` and the CAS at `'L213` succeeds.
 
-    Then `I_i` performs a (strong) compare-and-swap (CAS) at `'L213`.
+    `I_i` updates `top` from `x-1` to `x` at `'L213` and writes `bottom = x` at `'L216`. Let's prove
+    that `x-1 <= t_i`. Consider the invocation `I` that writes `x-1` to `top`. If `I` is `pop()`,
+    then `I` should be linearized before `I_i` thanks to the coherence of `top`. Suppose `I` is
+    `steal()`. Let `O_k` be the first `push()` invocation in `O_(j+1)`, ..., `O_(o-1)`. (If no such
+    invocation exists, let `k = o`.) By the coherence of `top`, all of `O_i`, ..., `O_(k-1)` should
+    be `pop()` taking the irregular path. Thus it is sufficient to prove that the value `I` read
+    from `bottom` at `'L404` should be coherence-before `WF_k`. Suppose otherwise. Then there is a
+    release-acquire synchronization from `WF_k` to `I`'s read from `bottom` at `'L404`, so `O_j`'s
+    write `top = x` at `'L213` is coherence-before `I`'s write `top = x-1` at `'L410`. But this
+    contradicts with the assumption.
 
-    If the CAS fails, then `I_i` reads `top >= x` at `'L213` and writes `bottom = x` at
-    `'L216`. Let's prove that `x <= t_i`. Consider the invocation `I` that writes `x` to `top`. If
-    `I` is `pop()`, then `I` should be linearized before `I_i` thanks to the coherence of
-    `top`. Suppose `I` is `steal()`. Then there is a release-acquire synchronization from `I`'s
-    write to `top` at `'L410` to `I_i`'s read from `top` at `'L213`, and `I` should load a value
-    that is coherence-before `WL_j` from `bottom`, where `j` is such an index that `I_i = O_j`. Thus
-    `I` is linearized before `I_i`, and `x <= t_i` holds. Thus we have `b_i = x <= t_i`, and it is
-    legit for `I_i` to return `EMPTY`.
+    By `(TOP)`, `x-1 <= t_i`, and the fact that `I_i` writes `x` to `top`, we have `t_i = x-1`. Thus
+    `t_i = x-1 = (b_i)-1`, and it is legit to pop the value from the `bottom` end of the deque and
+    increase `top`.
 
-    If the CAS succeeds, then `I_i` updates `top` from `x-1` to `x` at `'L213` and writes `bottom =
-    x` at `'L216`. Let's prove that `x-1 <= t_i`. Consider the invocation `I` that writes `x-1` to
-    `top`. If `I` is `pop()`, then `I` should be linearized before `I_i` thanks to the coherence of
-    `top`. Suppose `I` is `steal()`. Let `W` be the message `I` read from `bottom` at `'L404`. Then
-    since `I` returns a value, we have `x-1 <= Value(W)`. It is sufficient to prove that `W <= WL_j`
-    in the coherence order, where `j` is such an index that `I_i = O_j`. Let's suppose otherwise. In
-    order for `I` to read from `W` at `'L404` and `I_i` to read `top = x-1` at `'L204` at the same
-    time, either `I`'s write to `top` at `'L410` should be promised before reading `bottom` at
-    `'L404` or `W` should be promised before `I_i` reading `top` at `'L204`. But this is impossible:
-    the former is a release-store, and the latter (1) has a control dependency to the read from
-    `top` at `'L204`, (2) is a release-store, or (3) is after an seqcst fence.
-
-    Since `I_i` writes `x` to `top`, we have `t_i = x-1`. Thus `t_i = y = x-1 = (b_i)-1`, and it is
-    legit to pop the value from the `bottom` end of the deque and increase `top`.
-
-    `I_i` returns the right value for the same reason as above.
+    `I_i` returns the right value for roughly the same reason as above.
 
     <!-- r t x-2 -->
     <!-- ------- -->
@@ -610,6 +610,8 @@ those conditions. We prove for each case of `I_i`.
     <!-- r t x-1 -->
     <!-- u t x-1 x -->
     <!-- w b x -->
+
+    <!-- r t x-2 -->
 
     <!-- e.g. -->
 
@@ -638,19 +640,20 @@ those conditions. We prove for each case of `I_i`.
 - Case 4: `I_i` is `steal()` and it returns a value.
 
   Let `x` and `y` be the values `I_i` read from `bottom` at `'L404` and `top` at `'L401`,
-  respectively. Then either `x = b_i` or `x = (b_i)-1` holds by the definition of the owner methods
-  `push()` and `pop()`.
+  respectively. Then either `x = b_i` or `x = (b_i)-1` holds by the construction of linearization
+  order and the definition of `push()` and `pop()`. Since `I_i` returns a value, we have `y < x`.
+  let `k` be such an index that the value `I_i` reads from `bottom` at `'L404` is written by `O_k`.
 
-  Let's prove that `y <= t_i`. Consider the invocation `I` that writes `y` to `top`. If `I` is
-  `pop()`, then there is a release-acquire synchronization from `I`'s write to `top` at `'L213` to
-  `I_i`'s read from `top` at `'L401-'L402`. Let `j` be such an index that `I = O_j`. Then `I_i`
-  reads `WF_j` or a later value from `bottom` at `'L404`. From the fact that `I` writes `y` to
-  `top`, we know that `Value(WF_j) = y-1` and `Value(WL_j) = y`. Since `I_i` should read `bottom >
-  y`, `I_i` reads `WF_(j+1)` or a later value. Thus `I` is linearized before `I_i`, and `y <= t_i`
-  holds. If `I` is `steal()`, then there is a release-acquire synchronization from `I`'s write to
-  `top` at `'L410` to `I_i`'s read from `top` at `'L401-'L402`. Thus the value `I_i` read from
-  `bottom` at `'L404` is the value `I` read from `bottom` at `'L404` or a later value. Thus `I` is
-  linearized before `I_i`, and `y <= t_i` holds.
+  Let's prove that `y <= t_i`. Consider the invocation `I` that writes `y` to `top`. Suppose `I` is
+  `pop()`. Let `j` be such an index that `I = O_j`. From the fact that `I` writes `y` to `top`, we
+  know that `I` is `pop()` taking the irregular path.  Also, there is a release-acquire
+  synchronization from `I`'s write to `top` at `'L213` to `I_i`'s read from `top` at `'L401-'L402`,
+  and `j <= k` holds. Since `y < x`, it is not the case that `O_j`, ..., `O_k` are all `pop()`
+  taking the irregular path. Thus `I = O_j` should be linearized before `I_i`, and `y <= t_i` holds.
+  If `I` is `steal()`, then there is a release-acquire synchronization from `I`'s write to `top` at
+  `'L410` to `I_i`'s read from `top` at `'L401-'L402`. Thus the value `I_i` read from `bottom` at
+  `'L404` is the value `I` read from `bottom` at `'L404` or a later value. Thus `I` is linearized
+  before `I_i`, and `y <= t_i` holds.
 
   Since `I_i` writes `y+1` to `top`, we have `t_i = y`. Thus we have `t_i = y <= x-1 = (b_i)-1`, and
   it is legit to steal the value from the `top` end of the deque and increase `top`.
@@ -663,9 +666,9 @@ those conditions. We prove for each case of `I_i`.
 
   Let's first prove that for all regular `pop()` invocation `J` that writes `bottom = y` at `'L202`,
   `J` should be linearized before `I_i`. In order for `J` to enter the regular path, `J` should have
-  read from `top` a value `<= y-1`. Then by the synchronization of the seqcst fences from `J` to `I_i`
-  via `top`, the value `I_i` read from `bottom` at `'L404` is coherence-after-or the value written
-  by `J` at `'L202`. This `J` is linearized before `I_i`.
+  read from `top` a value `<= y-1`. Then by the synchronization of the seqcst-fences from `J` to
+  `I_i` via `top`, the value `I_i` read from `bottom` at `'L404` is coherence-after-or the value
+  written by `J` at `'L202`. This `J` is linearized before `I_i`.
 
   Now let's prove that `O_k` is linearized before `I_i`. If `O_k` is the only such an invocation
   that writes `bottom = y+1` at `'L110`, then the value `I_i` read from `bottom` should be
@@ -717,17 +720,17 @@ those conditions. We prove for each case of `I_i`.
 
   + Case `k < l`.
 
-    Let's prove by induction that for all `m ∈ [k, l]`, `WC[m, y % size(WB_m)] = v`. By assumption,
+    Let's prove by induction that for all `m ∈ [k, l]`, `WC_(m, y % size(WB_m)) = v`. By assumption,
     it holds for `m = k`. Now suppose that it holds for `m = n` for some `n ∈ [k, l)` and let's
     prove that it holds for `m = n+1`. Let `f` and `g` be the values `O_(n+1)` read from `bottom`
     and `top`. Then we have `g <= w <= y < b_(n+1) = f`. Since `k < n+1`, `O_(n+1)` is not a regular
-    `pop()` that writes `bottom = y`. If `O_(n+1)` is resizing, then since `g <= y < f`, `WC[n, y %
-    size(WB_n)]` is copied to `WC[n+1, y % size(WB_(n+1))]`. Thus we have `WC[n+1, y %
-    size(WB_(n+1))] = v`.
+    `pop()` that writes `bottom = y`. If `O_(n+1)` is resizing, then since `g <= y < f`, `WC_(n, y %
+    size(WB_n))` is copied to `WC_(n+1, y % size(WB_(n+1)))`. Thus we have `WC_(n+1, y %
+    size(WB_(n+1))) = v`.
 
     By the release-acquire synchronization from `O_l`'s write to `buffer` at `'L307` to `I_i`'s read
     from `buffer` at `'L408`, the value `I_i` read from the buffer's content at `'L409` should be
-    coherence-after-or the value `WC[l, y % size(WB_l)] = v` that `O_l` wrote at `'L305`. Similarly
+    coherence-after-or the value `WC_(l, y % size(WB_l)) = v` that `O_l` wrote at `'L305`. Similarly
     to the above case, `I_i`'s read happens before any overwrites to the same location. Thus `I_i`
     should have read `v` at `'L409`.
 
@@ -745,24 +748,24 @@ those conditions. We prove for each case of `I_i`.
 - Case 5: `I_i` is `steal()` and it returns `EMPTY`.
 
   Let `x` and `y` be the values `I_i` read from `bottom` at `'L404` and `top` at `'L401`,
-  respectively. Then `x <= y` holds since `I_i` returns `EMPTY`. Also, either `x = b_i` or `x =
-  b_i - 1` holds by the definition of the owner methods `push()` and `pop()`.
+  respectively. Since `I_i` returns `EMPTY`, `x <= y` holds. Also, either `x = b_i` or `x = (b_i)-1`
+  holds by the definition of `push()` and `pop()`.
 
   It is sufficient to prove that `b_i <= t_i`, since then it will be legit to return `EMPTY`.
 
   + Case `x = b_i`.
 
-    We prove `y <= t_i` as follows. Consider the invocation `I` that writes `y` to `top`. If `I` is
-    `pop()` and `I = O_j`, then there is a release-acquire synchronization from `I`'s write to `top`
-    at `'L213` and `I_i` read from `top` at `'L401-'L402`, and `x` should be coherence-after-or
-    `WF_j`. Thus `I` should be linearized before `I_i`, and `y <= t_i`. If `I` is `steal()`, by a
-    release-acquire synchronization from `I`'s write to `top` at `'L410` to `I_i`'s read from `top`
-    at `'L401-'L402`, `x` should be coherence-after-or the value `I` read from `bottom` at
-    `'L404`. Thus `I` should be linearized before `I_i`, and `y <= t_i`.
+    We prove `y <= t_i` as follows. Consider the invocation `I` that writes `y` to `top`. Suppose
+    `I` is `pop()`. Let `j` be such an index that `I = O_j`. Then there is a release-acquire
+    synchronization from `I`'s write to `top` at `'L213` and `I_i` read from `top` at `'L401-'L402`,
+    and `x` should be coherence-after-or `WF_j`. Thus `I` should be linearized before `I_i`, and `y
+    <= t_i`. If `I` is `steal()`, by a release-acquire synchronization from `I`'s write to `top` at
+    `'L410` to `I_i`'s read from `top` at `'L401-'L402`, `x` should be coherence-after-or the value
+    `I` read from `bottom` at `'L404`. Thus `I` should be linearized before `I_i`, and `y <= t_i`.
 
     Then we have `b_i = x <= y <= t_i`.
 
-  + Case `x = b_i - 1`.
+  + Case `x = (b_i)-1`.
 
     The value `x` should be read from `WF_j` for some `O_j` that is `pop()` taking the irregular
     path. Let `w` be the value `O_j` read from `top` at `'L204`. Since `O_j` takes the irregular
@@ -776,10 +779,11 @@ those conditions. We prove for each case of `I_i`.
     Now let's prove that `I` should be linearized before `I_i`. If `I` is `pop()`, then either `I =
     O_j` or `I` should be linearized before `O_j` by the coherence of `top`. Thus `I` is linearized
     before `I_i`. If `I` is `steal()`, then by a release-acquire synchronization from `I`'s
-    release-store at `'L410` to `O_j`'s acquire-load at `'L213`, the value `I` read from `bottom`
-    should be coherence-before `WL_j`. Thus `I` should be linearized before `O_j` and in turn `I_i`.
+    release-store at `'L410` to `O_j`'s acquire-load at `'L213`, the value `I` read from `bottom` at
+    `'L404` should be coherence-before `WL_j`. Thus `I` should be linearized before `O_j` and in
+    turn `I_i`.
 
-    Thus we have and `x+1 <= t_i`, and in turn `b_i = x+1 <= t_i`.
+    Thus we have and `x+1 <= t_i`, and then `b_i = x+1 <= t_i`.
 
     <!-- [I] -->
     <!-- r t x -->
@@ -853,13 +857,13 @@ calls `pop()`, and the stealer thread calls `steal()` twice. Consider the follow
 // stealer calls steal()
 'L11: read(top, 0, Relaxed)
 'L12: fence(SeqCst)
-'L13: read(bottom, 0, Relaxed) // from `'L02`
+'L13: read(bottom, 0, Acquire) // from `'L02`
 // return `Empty`
 
 // stealer calls steal()
 'L14: read(top, 0, Relaxed)
 'L15: fence(SeqCst)
-'L16: read(bottom, 1, Relaxed) // from `'L05`
+'L16: read(bottom, 1, Acquire) // from `'L05`
 'L17: CAS(top, 0, 1, Release) // success
 // return `42`
 ```
@@ -931,7 +935,7 @@ actually be slightly inefficient in this case.
 Alternatively, we can write a deque for each target architecture in order to achieve better
 performance. For example, [this paper][deque-bounded-tso] presents a variant of Chase-Lev deque in
 the "bounded TSO" x86 model, where you don't need to issue the expensive `MFENCE` barrier (think:
-seqcst fence) in `pop()`. Also, [this paper][chase-lev-weak] presents a version of Chase-Lev deque
+seqcst-fence) in `pop()`. Also, [this paper][chase-lev-weak] presents a version of Chase-Lev deque
 for ARMv7 that doesn't issue an `isync`-like fence, while the proposed implementation issues
 some. Probably `Consume` is relevant for the latter. These further optimizations are left as future
 work.
