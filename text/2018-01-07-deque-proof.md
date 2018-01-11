@@ -199,7 +199,7 @@ race and invalid pointer dereference.
 
 ### Absence of Data Races
 
-Every shared objects are atomically accessed so that there are no data races that invokes undefined
+Every shared objects are atomically accessed so that there are no data races that invoke undefined
 behavior.
 
 In particular, the contents of the buffer is atomically accessed (`'L109`, `'L211`, `'L409`). This
@@ -222,30 +222,31 @@ object.
 <!-- By invalid pointer dereference we mean (1) null pointer dereference, (2) use-after-free, or (3)
 free-after-free. -->
 
-It boils down to proving the safety of every access to the buffer pointed-to by `Inner`'s
-`self.buffer`, (1) since the other shared objects, namely `self.bottom` and `self.top`, are just
-integers, and (2) accesses to thread-local storage are straightforwardly safe. It is worth noting
-that while the deque is shared among the owner and its stealers, only the owner is able to call `fn
-push()`, `fn pop()`, and `fn resize()`, thereby modifying `self.bottom` and `self.buffer`.
+Pointer dereference safety boils down to proving the safety of every access to the contents of the
+buffer pointed-to by `Inner`'s `self.buffer`, (1) since the other shared objects, namely
+`self.bottom`, `self.top`, and `self.buffer`, are just integers or pointers, and (2) accesses to
+thread-local storage are straightforwardly safe. It is worth noting that while the deque is shared
+among the owner and its stealers, only the owner is able to call `fn push()`, `fn pop()`, and `fn
+resize()`, thereby modifying `self.bottom` and `self.buffer`.
 
 After `self.buffer` is initialized, it is modified only by the owner in `fn resize(): 'L307`. Since
 the contents inside a buffer is always accessed modulo the buffer's capacity (`'L109`, `'L211`,
 `'L409`) and the buffer's size is always nonzero, there is no buffer overrun.
 
 Thus it remains to prove that the buffer is not used after freed. Thanks to Crossbeam, we don't need
-to take care of all the details of memory reclamation; as a user of Crossbeam, we only need to prove
-that:
+to take care of all the details of memory reclamation; [this RFC][rfc-relaxed-memory] says that as a
+user of Crossbeam, we only need to prove that:
 
 - When a buffer is deferred to be dropped (`'L308`), there is no longer a reference to the buffer in
   the shared memory, and no concurrent mutator introduces the reference to the memory again.
 
   You can easily check these properties because the owner basically "owns" the buffer: only the
-  owner introduces/eliminates references to a buffer to/from the shared memory. In particular,
-  before a buffer is deferred to be dropped at `'L308`, the only reference to the buffer via
-  `self.buffer` is removed at `'L307`.
+  owner introduces/eliminates references to a buffer to/from the shared memory. Indeed, before a
+  buffer is deferred to be dropped at `'L308`, the only reference to the buffer via `self.buffer` is
+  removed at `'L307`.
 
-- With an `unprotected()` guard, we should not defer to drop an object that another thread is
-  accessing, and should not access an object that another thread is deferring to drop.
+- With an `unprotected()` guard, we should not defer to drop an object that is accessed by another
+  thread, and should not access an object that is deferred to be dropped by another thread.
 
   It is indeed the case because (1) a buffer is deferred to be dropped only by the owner with a
   protected guard, and (2) stealers do not use an unprotected guard.
@@ -260,37 +261,36 @@ A more interesting question is: does the implementation act like a deque?
 ### Specification: Linearizability and Synchronization
 
 In order to answer the question, we first define the sequential specification of a deque. A *deque
-state* as a triple `(t, b, A)`, where `t` is the top index, `b` is the bottom index, and `A` is the
-array of the values within the indexes `[t, b)`. A `push()` method invocation increases the bottom
-index `b`, and push the input value at the end of `A`. A `pop()` method invocation decreases the
-bottom index `b` and pop the last value from `A`, if `t < b`; otherwise, touch nothing and return
-`EMPTY`. (As a special case, if `t+1 = b`, you can increase the top index `t` instead of decrease
-the bottom index `b`.) A `steal()` method invocation increases the top index `t` and pop the first
-value from `A`, if `t < b`; otherwise, touch nothing and return `EMPTY`. By `S -(I,R)-> S'` we
-denote the described *transition relation* from a deque state `S` into `S'` by the method invocation
-`I` returning `R`.
+state* is a triple `(t, b, A)`, where `t` is the top index, `b` is the bottom index, and `A` is the
+array of the values within the indexes `[t, b)`. A `push()` invocation increases the bottom index
+`b`, and push the input value at the end of `A`. A `pop()` invocation decreases the bottom index `b`
+and pop the last value from `A`, if `t < b`; otherwise, touch nothing and return `EMPTY`. (As a
+special case, if `t+1 = b`, you can increase the top index `t` instead of decrease the bottom index
+`b`.) A `steal()` invocation increases the top index `t` and pop the first value from `A`, if `t <
+b`; otherwise, touch nothing and return `EMPTY`. By `S -(I,R)-> S'` we denote the *transition
+relation* described above, from a deque state `S` into `S'` by the invocation `I` returning `R`.
 
 A shared object is **linearizable** as a deque if the following holds:
 
 > Suppose that multiple threads invoked methods (i.e. `push()`, `pop()`, `steal()`) on the shared
 > object in a single execution. For those invocations that is not `steal()` returning `RETRY`, there
-> exists a permutation `I_1`, ..., `I_n` of them, which we call **"linearization order"**, denoted
-> by `<`, and `(t_i, b_i, A_i)` for each `i` such that:
+> exists (1) a permutation `I_1`, ..., `I_n` of them, which we call **"linearization order"**,
+> denoted by `<`; and (2) a deque state `(t_i, b_i, A_i)` for each `i`, such that:
 >
 > - (t_0, b_0, A_0) = (0, 0, []);
 >
 > - (VIEW) For all `x` and `y`, if `I_x -view-> I_y`, then `x < y` holds;
 >
 > - (SEQ) For all `i`, `(t_i, b_i, A_i) -(signature(I_i),ret(I_i))-> (t_(i+1), b_(i+1), A_(i+1))`
->   holds. In other words, the invocations `I_1`, ..., `I_n` return outputs *as if* the methods are
->   sequentially (i.e. non-concurrently) executed to a deque one-by-one in the linearization order.
+>   holds. In other words, the invocations `I_1`, ..., `I_n` return outputs *as if* the invocations
+>   are sequentially (i.e. non-concurrently) executed to a deque in the linearization order.
 
-Here, by `view_beginning(j)` and `view_end(j)` we mean the thread `j`'s view at the beginning and
+Here, by `view_beginning(I)` and `view_end(I)` we mean the thread `I`'s view at the beginning and
 the end of the invocation. A view `v1` is less than or equal to another view `v2`, denoted by `v1 <=
 v2`, if for any location `l`, `v1[l] <= v2[l]` holds; and `v1` is less than `v2`, denoted by `v1 <
-v2`, if (1) `v1 <= v2`, and (2) there exists a location `l` such that `v1[l] < v2[l]`. By `j_x
--view-> j_y` we mean `view_end(j_x) < view_beginning(j_y)`. Also, `signature(I_i)` and `ret(I_i)`
-are the function call signature and the return value of `I_i`.
+v2`, if (1) `v1 <= v2`, and (2) there exists a location `l` such that `v1[l] < v2[l]`. By `I -view->
+J` we mean `view_end(I) < view_beginning(J)`. Also, `signature(I)` and `ret(I)` are the function
+call signature and the return value of `I`.
 
 In addition to linearizability, we require that a matching pair of `push()` and `steal()`
 synchronize like a matching pair of a release-store and an acquire-load:
@@ -318,7 +318,7 @@ fn client() {
 
 and `view_beginning(i_1) = view_end(i_1) = view_beginning(i_2) = view_end(i_2)`. By definition, `i_2
 -> i_1` is a legit linearization order, yet *morally* `i_1` should be ordered before `i_2` because
-it is so in the program order. However, we do not regard it a problem: if `i_1` and `i_2` do not
+it is so in the program order. However, we do not regard it as a problem: if `i_1` and `i_2` do not
 change the view, they are read-only, and should not change the state of the shared object. Thus it
 doesn't matter whether `i_1` is considered to be before or after `i_2`.
 
@@ -330,7 +330,7 @@ doesn't matter whether `i_1` is considered to be before or after `i_2`.
 ### Construction of Linearization Order
 
 Consider the invocations to the deque in an execution. For the owner's invocations, the program
-order is the only possible linearization among them. Let's assume that `O_0`, ..., `O_(o-1)` is the
+order is the only possible linearization among them. Let's assume that `O_0`, ..., `O_(o-1)` are the
 owner's invocations, sorted according to the program order. We construct a full linearization order
 by inserting stealers' invocations into it.
 
@@ -344,21 +344,23 @@ Note that every owner's invocation writes to `bottom`, and every stealers' invoc
 - If `S` returns `EMPTY`, then `S ∈ G_i`.
 
 - Otherwise (i.e. `S` returns a value), let `j` be such an index that `O_(j+1)`, ..., `O_i` are
-  `pop()` taking the "irregular" path (i.e. not entering `'L218`) and `O_j` is not. Then `S ∈ G_j`.
+  `pop()` taking the "irregular" path (i.e. not entering `'L218`) and `O_j` is not. (`j = -1` if
+  `O_0`, ..., `O_i` are all `pop()` taking the irregular path.) Then `S ∈ G_j`.
 
 We will insert the invocations in `G_i` between `O_i` and `O_(i+1)`. Inside a group `G_i`, we give
 the linearization order as follows:
 
 - Let `STEAL^x` be the set of steal invocations in which an element at the index `x` is stolen, and
-  `STEAL_EMPTY` be the set of steal invocations in which a stealer fails to steal an element because
-  the deque is empty. Let `STEAL` be `union_x {STEAL^x}`.
+  `STEAL_EMPTY` be the set of steal invocations that returns `EMPTY`. Let `STEAL` be `union_x
+  {STEAL^x}`.
 
 - Within `G_i`, place `STEAL` invocations first, and then `STEAL_EMPTY` invocations.
 
-- If there are multiple `STEAL` invocations, order `STEAL^x` before `STEAL^y` if `x < y`.
+- If there are multiple `STEAL` invocations in `G_i`, order `STEAL^x` before `STEAL^y` if `x < y`.
 
-- If there are multiple `STEAL_EMPTY` invocations, order `I` before `J` if `I -view-> J`. (Note that
-  the `-view->` relation is acyclic; and there can be multiple possible linearizations.)
+- If there are multiple `STEAL_EMPTY` invocations in `G_i`, order `I` before `J` if `I -view->
+  J`. (Note that the `-view->` relation is acyclic; and there can be multiple possible
+  linearizations.)
 
 
 ### Auxiliary Lemma
@@ -837,9 +839,10 @@ seqcst/relaxed orderings.
 ## Reasoning Out-of-thin-air Behavior
 
 The current implementation of Chase-Lev deque is not linearizable in C11 as-is, because of so-called
-"out-of-thin-air behaviors". Here is an example. Suppose that the deque consists of a single value
-`42`, with `bottom = 1` and `top = 0`. Two concurrent threads access the deque. The owner thread
-calls `pop()`, and the stealer thread calls `steal()` twice. Consider the following execution:
+"out-of-thin-air behaviors". Here is an example that is allowed in C11, but is not
+linearizable. Suppose that the deque consists of a single value `42`, with `bottom = 1` and `top =
+0`; two concurrent threads access the deque; and the owner thread calls `pop()`, and a stealer
+thread calls `steal()` twice. Consider the following execution:
 
 ```rust
 // owner calls pop()
@@ -866,10 +869,10 @@ calls `pop()`, and the stealer thread calls `steal()` twice. Consider the follow
 // return `42`
 ```
 
-C11 allows this out-of-thin-air execution with a dependency cycle among `'L04`, `'L05`, `'L16`, and
-`'L17`. But it really should not, because there is no linearization of these method invocations.
-There is a [proposal to ban out-of-thin-air behaviors][n3710] in the C11 standards, but the proposal
-only vaguely described what does "out-of-thin-air" mean.
+While this execution is allowed in C11, it is called out-of-thin-air because there is a genuine
+dependency cycle among `'L04`, `'L05`, `'L16`, and `'L17`. There is a [proposal to ban
+out-of-thin-air behaviors][n3710] in the C11 standards, but the proposal only vaguely described what
+does "out-of-thin-air" mean.
 
 You can roughly regard the promising semantics as a precise definition of out-of-thin-air
 behaviors. Indeed, the promising semantics forbids this execution. See the proof of
@@ -918,14 +921,14 @@ the CAS at `'L213` (as done in [this paper][chase-lev-weak]), or (3) requiring a
 the failure case for the CAS at `'L213`. We chose (3), because we believe it incurs the least
 performance overhead.
 
-It is worth nothing that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
-one above is possible, where the CAS at `'L05` reads `top = 0` and then spuriously fails.
-
 Even though release/acquire orderings are enough for the success/failure cases of the CAS at
 `'L213`, C11 (and effectively also LLVM and Rust) requires that "The failure argument shall be no
 stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So we used acqrel/acquire in
 the implementation instead. This C11 requirement may be fail-safe for most use cases, but can
 actually be slightly inefficient in this case.
+
+It is worth nothing that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
+one above is possible, where the CAS at `'L05` reads `top = 0` and then spuriously fails.
 
 
 ## Comparison to Target-dependent Implementations
@@ -935,8 +938,8 @@ performance. For example, [this paper][deque-bounded-tso] presents a variant of 
 the "bounded TSO" x86 model, where you don't need to issue the expensive `MFENCE` barrier (think:
 seqcst-fence) in `pop()`. Also, [this paper][chase-lev-weak] presents a version of Chase-Lev deque
 for ARMv7 that doesn't issue an `isync`-like fence, while the proposed implementation issues
-some. Probably `Consume` is relevant for the latter. These further optimizations are left as future
-work.
+some. Probably `Consume` is relevant for the latter case. These further optimizations are left as
+future work.
 
 
 
@@ -946,6 +949,7 @@ work.
 [deque-current]: https://github.com/crossbeam-rs/crossbeam-deque
 [deque-bounded-tso]: http://www.cs.tau.ac.il/~mad/publications/asplos2014-ffwsq.pdf
 [deque-pr]: https://github.com/jeehoonkang/crossbeam-deque/tree/deque-proof
+[rfc-relaxed-memory]: https://github.com/crossbeam-rs/rfcs/blob/master/text/2017-07-23-relaxed-memory.md
 [promising]: http://sf.snu.ac.kr/promise-concurrency/
 [promising-coq]: https://github.com/snu-sf/promising-coq
 [synch-patterns]: https://jeehoonkang.github.io/2017/08/23/synchronization-patterns.html
