@@ -1,7 +1,7 @@
 # Summary
 
-This RFC proposes an implementation of work-stealing double-ended queue (deque) on Crossbeam, and
-its correctness proof. this RFC has a [companion PR to `crossbeam-deque`][deque-pr].
+This RFC proposes an implementation of concurrent work-stealing double-ended queue (deque) on
+Crossbeam, and its correctness proof. this RFC has a [companion PR to `crossbeam-deque`][deque-pr].
 
 
 
@@ -47,7 +47,7 @@ updated accordingly soon.
 ## Proposed implementation
 
 A work-stealing deque is owned by the "owner" thread (`Deque<T>`), which can push items to and pop
-items from the "bottom" end of the deque. Other threads, which we call "stealers" (`Stealers<T>`),
+items from the "bottom" end of the deque. Other threads, which we call "stealers" (`Stealer<T>`),
 try to steal items from the "top" end of the deque. The following is a summary of its interface:
 
 ```rust
@@ -59,7 +59,7 @@ impl<T: Send> Deque<T> { // Send + !Sync
     pub fn pop(&self) -> Option<T> { ... } // None if empty
 }
 
-impl<T: Send> Stealer<T> { // Send + Sync
+impl<T: Send> Stealer<T> { // Send + Sync + Clone
     pub fn steal(&self) -> Option<T> { ... }
 }
 ```
@@ -106,7 +106,7 @@ impl<T:Send> Deque<T> {
 The pseudocode for `Inner<T>`'s `fn push()`, `fn pop()`, and `fn steal()` is as follows:
 
 ```rust
-pub fn push(&self, t: T) {
+pub fn push(&self, value: T) {
     'L101: let b = self.bottom.load(Relaxed);
     'L102: let t = self.top.load(Acquire);
     'L103: let mut buffer = self.buffer.load(Relaxed, epoch::unprotected());
@@ -117,7 +117,7 @@ pub fn push(&self, t: T) {
     'L107:     buffer = self.buffer.load(Relaxed, epoch::unprotected());
     'L108: }
 
-    'L109: buffer.write(b % buffer.get_capacity(), t);
+    'L109: buffer.write(b % buffer.get_capacity(), value, Relaxed);
     'L110: self.bottom.store(b + 1, Release);
 }
 
@@ -134,7 +134,7 @@ pub fn pop(&self) -> Option<T> {
     'L209: }
 
     'L210: let buffer = self.buffer.load(Relaxed, epoch::unprotected());
-    'L211: let mut value = Some(buffer.read((b - 1) % buffer.get_capacity()));
+    'L211: let mut value = Some(buffer.read((b - 1) % buffer.get_capacity(), Relaxed));
 
     'L212: if len == 1 {
     'L213:     if self.top.compare_and_swap(t, t + 1, Release, Acquire).is_err() {
@@ -175,7 +175,7 @@ pub fn steal(&self) -> Option<T> {
     'L407:     }
 
     'L408:     let buffer = self.buffer.load(Acquire, &guard);
-    'L409:     let value = buffer.read(t % buffer.get_capacity());
+    'L409:     let value = buffer.read(t % buffer.get_capacity(), Relaxed);
 
     'L410:     match self.top.compare_and_swap_weak(t, t + 1, Release) {
     'L411:         Ok(_) => return Some(value),
@@ -197,26 +197,24 @@ behavior due to illegal memory accesses. We discuss two possible causes of undef
 race and invalid pointer dereference.
 
 
-### Presence of Data Races
+### Absence of Data Races
 
-In the C/C++11 standards, if two threads race on a non-atomic object, i.e. they concurrently access
-it and at least one of them writes to it, then the program's behavior is undefined. Unfortunately,
-in fact, `fn push(): 'L109` and `fn steal(): 'L409` may race on the contents of the `buffer`. For
-example, the scheduler may stop a `steal()` invocation right after `'L402` so that `t` read in
-`'L401` may be arbitrarily stale. Now, suppose that in a concurrent `push()` invocation, `b` equals
-to `t + buffer.get_capacity()` and it is overwriting a value to `buffer`'s `(b %
-buffer.get_capacity())`-th element. At the same time, the `steal()` invocation may wake up and read
-`buffer`'s `(t % buffer.get_capacity())`-th element, incurring a data race with the `push()`.
+Every shared objects are atomically accessed so that there are no data races that invokes undefined
+behavior.
 
-In order to avoid this data race, we may use an atomic buffer. However, the deque's item may be
-arbitrarily large, and [atomic accesses to large objects are most likely blocking][cppatomic], which
-is highly undesirable. Thus there is a genuine data race in Chase-Lev deque w.r.t. the C11
-standards.
+In particular, the contents of the buffer is atomically accessed (`'L109`, `'L211`, `'L409`). This
+is necessary because `fn push(): 'L109` and `fn steal(): 'L409` may concurrently access the contents
+of the `buffer`, while the former is writing to it. For example, the scheduler may stop a `steal()`
+invocation right after `'L402` so that `t` read in `'L401` may be arbitrarily stale. Now, suppose
+that in a concurrent `push()` invocation, `b` equals to `t + buffer.get_capacity()` and it is
+overwriting a value to `buffer`'s `(b % buffer.get_capacity())`-th element. At the same time, the
+`steal()` invocation may wake up and read `buffer`'s `(t % buffer.get_capacity())`-th element.
 
-We make a rather bold claim: **data races are NOT undefined behavior**, but a racing reader may read
-an unspecified value (or the `poison` value in the LLVM lingo), and two racing writers may write
-each word of values in any order. This is the specification on racy accesses of promising semantics,
-except that the semantics currently doesn't specify the behavior of multi-word accesses.
+We assume the accesses to the contents of the buffer are non-blocking. It is worth noting that the
+deque's item may be arbitrarily large, and [atomic accesses to large objects are probably
+blocking][cppatomic] in the C/C++11 standard library. But this really can be non-blocking, e.g. by
+interpreting a relaxed store to a large object as concurrent relaxed stores to each word of the
+object.
 
 
 ### Absence of Invalid Pointer Dereference
