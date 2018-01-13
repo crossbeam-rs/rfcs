@@ -958,9 +958,10 @@ performance overhead.
 
 Even though release/acquire orderings are enough for the success/failure cases of the CAS at
 `'L213`, C11 (and effectively also LLVM and Rust) requires that "The failure argument shall be no
-stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So we used acqrel/acquire in
-the implementation instead. This C11 requirement may be fail-safe for most use cases, but can
-actually be slightly inefficient in this case.
+stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So instead, we used
+release/relaxed for success/failure cases, and issued an acquire fence for the failure case in the
+implementation. This C11 requirement may be fail-safe for most use cases, but can actually be
+slightly inefficient in this case.
 
 It is worth nothing that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
 one above is possible, where the CAS at `'L05` reads `top = 0` and then spuriously fails.
