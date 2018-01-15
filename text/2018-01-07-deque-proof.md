@@ -7,10 +7,10 @@ Crossbeam, and its correctness proof. this RFC has a [companion PR to `crossbeam
 
 # Motivation
 
-We believed that the current implementation of deque is not fully optimized yet, leaving
-non-negligible room for performance improvement. However, it was unclear how to further optimize the
-current implementation while guaranteeing its correctness. This RFC resolves this issue by proving
-an optimized implementation.
+The current implementation of deque is not fully optimized yet, leaving non-negligible room for
+performance improvement. However, it is unclear how to further optimize the current implementation
+while guaranteeing its correctness. This RFC resolves this issue by proving an optimized
+implementation.
 
 
 
@@ -23,8 +23,8 @@ consistency model, and (2) it is functionally correct, i.e. it acts like a deque
 ## Semantics of C/C++ relaxed-memory concurrency
 
 For the semantics of C/C++ relaxed-memory concurrency on which the deque implementation is based, we
-use the state-of-art [promising semantics][promising]. For a gentle introduction to the semantics,
-we refer the reader to [this blog post][synch-patterns].
+use the state-of-the-art [promising semantics][promising]. For a gentle introduction to the
+semantics, we refer the reader to [this blog post][synch-patterns].
 
 One caveat of the original promising semantics is its lack of support for memory allocation. In this
 RFC, we use the following semantics for memory allocation:
@@ -33,15 +33,15 @@ RFC, we use the following semantics for memory allocation:
   Q+`. Now we define `Timestamp = Option<Q+>`, where `None` means the location is unallocated.
   Suppose `None < Some(t)` for all `t`.
 
-- At the beginning, the thread's view is `None` for all the locations. When a thread allocates a
+- At the beginning, a thread's view is `None` for all the locations. When a thread allocates a
   location, its view on the location becomes `0`.
 
 - If a thread is reading a location and it's view on the location is `None`, i.e. it is unallocated
-  in the thread's point of view, the behavior is undefined.
+  in the thread's point of view, then the behavior is undefined.
 
-We believe this definition is compatible with all the results presented in the [paper][promising] on
-the promising semantics. We hope [the Coq formalization][promising-coq] of promising semantics be
-updated accordingly soon.
+We believe this definition is compatible with all the results presented in the [the promising
+semantics paper][promising]. We hope [its Coq formalization][promising-coq] be updated accordingly
+soon.
 
 
 ## Proposed implementation
@@ -68,9 +68,9 @@ Chase and Lev proposed [an efficient implementation of deque][chase-lev] on sequ
 memory model, and Lê et. al. proposed [its variant for ARM and C/C++ relaxed-memory
 concurrency][chase-lev-weak]. This RFC presents an even more optimized variant for C/C++.
 
-A Chase-Lev deque consists of (1) the `bottom` index for the worker, (2) the `top` index for both
-the worker and the stealers, and (3) the underlying `buffer` that contains items. When the buffer is
-too small or too large, the worker may replace it with one with more appropriate size:
+A Chase-Lev deque consists of (1) the `bottom` index for the owner, (2) the `top` index for both the
+owner and the stealers, and (3) the underlying `buffer` that contains items. When the buffer is too
+small or too large, the owner may replace it with one with more appropriate size:
 
 ```rust
 struct<T: Send> Inner<T> {
@@ -231,14 +231,15 @@ thereby modifying `self.bottom` and `self.buffer`.
 
 After `self.buffer` is initialized, it is modified only by the owner in `fn resize(): 'L307`. Since
 the contents inside a buffer is always accessed modulo the buffer's capacity (`'L109`, `'L211`,
-`'L409`) and the buffer's size is always nonzero, there is no buffer overrun.
+`'L409`) and the buffer's size is always nonzero, there are no buffer overruns.
 
 Thus it remains to prove that the buffer is not used after freed. Thanks to Crossbeam, we don't need
 to take care of all the details of memory reclamation; [this RFC][rfc-relaxed-memory] says that as a
 user of Crossbeam, we only need to prove that:
 
-- When a buffer is deferred to be dropped (`'L308`), there is no longer a reference to the buffer in
-  the shared memory, and no concurrent mutator introduces the reference to the memory again.
+- When a buffer is deferred to be dropped (`'L308`), there are no longer references to the buffer in
+  the shared memory, and no concurrent mutators introduce a reference to the buffer in the memory
+  again.
 
   You can easily check these properties because the owner basically "owns" the buffer: only the
   owner introduces/eliminates references to a buffer to/from the shared memory. Indeed, before a
@@ -881,33 +882,33 @@ thread calls `steal()` twice. Consider the following execution:
 
 ```rust
 // owner calls pop()
-'L01: read(bottom, 1, Relaxed)
-'L02: write(bottom, 0, Relaxed)
-'L03: fence(SeqCst)
-'L04: read(top, 1, Relaxed) // from `'L17`
-'L05: write(bottom, 1, Relaxed)
+'L201: read(bottom, 1, Relaxed)
+'L202: write(bottom, 0, Relaxed)
+'L203: fence(SeqCst)
+'L204: read(top, 1, Relaxed) // value from `'L410`
+'L207: write(bottom, 1, Relaxed)
 // return `Empty`
 
 ||
 
 // stealer calls steal()
-'L11: read(top, 0, Relaxed)
-'L12: fence(SeqCst)
-'L13: read(bottom, 0, Acquire) // from `'L02`
+'L401: read(top, 0, Relaxed)
+'L402: fence(SeqCst)
+'L404: read(bottom, 0, Acquire) // value from `'L202`
 // return `Empty`
 
 // stealer calls steal()
-'L14: read(top, 0, Relaxed)
-'L15: fence(SeqCst)
-'L16: read(bottom, 1, Acquire) // from `'L05`
-'L17: CAS(top, 0, 1, Release) // success
+'L401: read(top, 0, Relaxed)
+'L402: fence(SeqCst)
+'L404: read(bottom, 1, Acquire) // value from `'L207`
+'L410: CAS(top, 0, 1, Release) // success
 // return `42`
 ```
 
 While this execution is allowed in C11, it is called out-of-thin-air because there is a genuine
-dependency cycle among `'L04`, `'L05`, `'L16`, and `'L17`. There is a [proposal to ban
-out-of-thin-air behaviors][n3710] in the C11 standards, but the proposal only vaguely described what
-does "out-of-thin-air" mean.
+dependency cycle among `'L204`, `'L207`, `'L404` in the second call to `steal()`, and `'L410`. There
+is a [proposal to ban out-of-thin-air behaviors][n3710] in the C11 standards, but the proposal only
+vaguely described what does "out-of-thin-air" mean.
 
 You can roughly regard the promising semantics as a precise definition of out-of-thin-air
 behaviors. Indeed, the promising semantics forbids this execution. See the proof of
@@ -925,55 +926,55 @@ following execution is possible, but is not linearizable:
 
 ```rust
 // owner calls pop()
-'L01: read(bottom, 1, Relaxed)
-'L02: write(bottom, 0, Relaxed)
-'L03: fence(SeqCst)
-'L04: read(top, 0, Relaxed)
-'L05: CAS(top, 0, 1, Release) // fail; read from from `'L17`
-'L06: write(bottom, 1, Relaxed)
+'L201: read(bottom, 1, Relaxed)
+'L202: write(bottom, 0, Relaxed)
+'L203: fence(SeqCst)
+'L204: read(top, 0, Relaxed)
+'L213: CAS(top, 0, 1, Release) // fail; value from `'L410`
+'L216: write(bottom, 1, Relaxed)
 // return `Empty`
 
 ||
 
 // stealer calls steal()
-'L11: read(top, 0, Relaxed)
-'L12: fence(SeqCst)
-'L13: read(bottom, 0, Relaxed) // from `'L02`
+'L401: read(top, 0, Relaxed)
+'L402: fence(SeqCst)
+'L404: read(bottom, 0, Relaxed) // value from `'L202`
 // return `Empty`
 
 // stealer calls steal()
-'L14: read(top, 0, Relaxed)
-'L15: fence(SeqCst)
-'L16: read(bottom, 1, Relaxed) // from `'L06`
-'L17: CAS(top, 0, 1, Release) // success
+'L401: read(top, 0, Relaxed)
+'L402: fence(SeqCst)
+'L404: read(bottom, 1, Relaxed) // value from `'L216`
+'L410: CAS(top, 0, 1, Release) // success
 // return `42`
 ```
 
-Note that this example is similar to the one above, but there is no dependency from `'L05` to
-`'L06`. So in order to forbid this execution, we have to ensure the ordering of `'L05` and `'L06`,
-e.g. by either (1) release-write at `'L216`, (2) requiring seqcst ordering for the success case for
-the CAS at `'L213` (as done in [this paper][chase-lev-weak]), or (3) requiring acquire ordering for
-the failure case for the CAS at `'L213`. We chose (3), because we believe it incurs the least
-performance overhead.
+Note that this example is similar to the one above, but there is no dependency from `'L213` to
+`'L216`. So in order to forbid this execution, we have to ensure the ordering of `'L213` and
+`'L216`, e.g. by either (1) release-write at `'L216`, (2) requiring seqcst ordering for the success
+case for the CAS at `'L213` (as done in [this paper][chase-lev-weak]), or (3) requiring acquire
+ordering for the failure case for the CAS at `'L213`, or (4) issuing an acquire fence after the CAS
+at `'L213` fails. We chose (3) in this RFC, because we believe it incurs the least performance
+overhead.
 
 Even though release/acquire orderings are enough for the success/failure cases of the CAS at
 `'L213`, C11 (and effectively also LLVM and Rust) requires that "The failure argument shall be no
-stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So instead, we used
-release/relaxed for success/failure cases, and issued an acquire fence for the failure case in the
-implementation. This C11 requirement may be fail-safe for most use cases, but can actually be
-slightly inefficient in this case.
+stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So instead, we chose (4) in
+the companion implementation. This C11 requirement may be fail-safe for most use cases, but can
+actually be slightly inefficient in this case.
 
 It is worth nothing that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
-one above is possible, where the CAS at `'L05` reads `top = 0` and then spuriously fails.
+one above is possible, where the CAS at `'L213` reads `top = 0` and then spuriously fails.
 
 
 ## Comparison to Target-dependent Implementations
 
 Alternatively, we can write a deque for each target architecture in order to achieve better
-performance. For example, [this paper][deque-bounded-tso] presents a variant of Chase-Lev deque in
-the "bounded TSO" x86 model, where you don't need to issue the expensive `MFENCE` barrier (think:
+performance. For example, [this paper][deque-bounded-tso] presents a variant of various deques in
+the "bounded TSO" x86 model, where you don't need to issue the expensive `mfence` barrier (think:
 seqcst-fence) in `pop()`. Also, [this paper][chase-lev-weak] presents a version of Chase-Lev deque
-for ARMv7 that doesn't issue an `isync`-like fence, while the proposed implementation issues
+for ARMv7 that doesn't issue `isync`-like fences, while the proposed implementation issues
 some. Probably `Consume` is relevant for the latter case. These further optimizations are left as
 future work.
 
