@@ -509,19 +509,20 @@ Let `I_0`, ..., `I_(n-1)` be the invocations sorted according to the constructed
 order. In addition to `(SEQ)` and `(SYNC)`, we will simultaneously prove the following conditions
 with the same existentially quantified values of `t_i`, `b_i`, `A_i`:
 
-> `(BOTTOM)`: If `I_i` is an owner invocation, `b_i` equals to the value `I_i` read from `bottom` at
-> `'L101` or `'L201`.
+> `(BOTTOM)`: If `I_i` is an owner invocation, then `b_i` equals to the value `I_i` read from
+> `bottom` at `'L101` or `'L201`.
 >
 > `(TOP)`: In `I_0`, ..., `I_(i-1)`, there are `t_i` invocations that succeed in updating `top`. Let
 > `T_0`, ..., `T_((t_i)-1)` be such invocations, sorted according to the order in `I`. Then `T_x`
 > updates `top` from `x` to `x+1`.
 >
-> `(CONTENTS)`: for all `i` and `x ∈ [t_i, b_i)`, there exists a `push()` invocation into `x` in
-> `I_0, ..., I_(i-1)`; and `A_i[x]` is the value inserted by the last such invocation.
+> `(CONTENTS)`: for all `x ∈ [t_i, b_i)`, there exists a `push()` invocation into `x` in `I_0, ...,
+> I_(i-1)`; and `A_i[x]` is the value inserted by the last such invocation.
 
 We prove that `{I_i}` satisfies `(SEQ)`, `(SYNC)`, `(BOTTOM)`, `(TOP)`, and `(CONTENTS)` by
 induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and let's prove that
-`I_i` also satisfies those conditions. We prove for each case of `I_i`.
+there exists `b_i`, `t_i`, and `A_i` such that `I_i` also satisfies those conditions. We prove for
+each case of `I_i`.
 
 - Case 1: `I_i` is `push()`.
 
@@ -535,8 +536,8 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
   `I` that writes `y+2` to `top`, if exists. (Otherwise, by `(TOP)`, `t_i <= y+1` should hold.) If
   `I` is `pop()`, then `I` should be linearized after `I_i` thanks to the coherence of `top`; if `I`
   is `steal()`, then by the synchronization of the seqcst-fences from `I_i` to `I` via `top`, the
-  value `I` read from `bottom` should be coherence-after-or `WL_j`. Thus `I` is linearized after
-  `I_i`, and by `(TOP)`, `t_i <= y+1` holds.
+  value `I` read from `bottom` at `'L404` should be coherence-after-or `WL_j`. Thus `I` is
+  linearized after `I_i`, and by `(TOP)`, `t_i <= y+1` holds.
 
   Then we have `t_i <= y+1 < y+2 <= x = b_i`, and it is legit to pop a value from the bottom end of
   the deque and decrease `bottom`.
@@ -545,21 +546,22 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
   in `I_0`, ..., `I_(i-1)` that pushed to the index `x-1` and writes `bottom = x`, and `v` be the
   value `O_k` pushed. Thanks to `(CONTENTS)`, it is sufficient to prove that `I_i` returns `v`.
 
-  For all `l`, let `WB_l` be the value of `buffer` at the end of the invocation `O_l`. Also, for all
-  `z`, let `WC_(l, z)` be the `z`-th contents of the buffer `WB_l` at the end of the invocation
-  `O_l`. These are well-defined since the pointer `buffer` and the contents of the buffer are
-  modified only by the owner.
+  For all `l`, let `WB_l` be the value of `buffer` at the beginning of the invocation `O_l`. Also,
+  for all `z`, let `WC_(l, z)` be the `z`-th contents of the buffer `WB_l` at the beginning of the
+  invocation `O_l`. These are well-defined since the pointer `buffer` and the contents of the buffer
+  are modified only by the owner.
 
-  Let's prove by induction that for all `l ∈ [k, j)`, `WC_(l, (x-1) % size(WB_l)) = v`. Since `O_k`
-  just pushed a value to the index `x-1`, it trivially holds for the base case `l = k`. Now suppose
-  that it holds for `l = m` for some `m ∈ [k, j-1)` and prove that it holds for `l = m+1`. Since
-  `O_k` is the last operation that writes `bottom = x` until `O_j` writes `bottom = x-1`, `O_(m+1)`
-  is not a regular `pop()` that writes `bottom = x-1`. If `O_(m+1)` is resizing, then for the values
-  `z` and `w` that `O_(m+1)` read from `bottom` at `'L301` and `top` at `'L302`, respectively, we
-  have `z >= x` by the choice of `O_k`, and `w <= y < x` by the coherence on `top`. Thus `WC_(m,
-  (x-1) % size(WB_m)) = v` is copied to `WC_(m+1, (x-1) % size(WB_(m+1)))`.
+  Let's prove by induction that for all `l ∈ (k, j]`, `WC_(l, (x-1) % size(WB_l)) = v`. Since `O_k`
+  just pushed a value to the index `x-1`, it trivially holds for the base case `l = k+1`. Now
+  suppose that it holds for `l = m` for some `m ∈ (k, j-1]` and prove that it holds for `l =
+  m+1`. Since `O_k` is the last operation that writes `bottom = x` before `O_j` writes `bottom =
+  x-1`, `O_m` is not a regular `pop()` that writes `bottom = x-1`. If `O_m` is resizing, then for
+  the values `z` and `w` that `O_m` read from `bottom` at `'L301` and `top` at `'L302`,
+  respectively, we have `z >= x` by the choice of `O_k` and `w <= y` by the coherence on
+  `top`. Since `y < x`, `WC_(m, (x-1) % size(WB_m)) = v` is copied to `WC_(m+1, (x-1) %
+  size(WB_(m+1)))`.
 
-  Thus `I_i = O_j` returns `WC_(j-1, (x-1) % size(WB_(j-1)))`, which equals to `v`.
+  Thus `I_i = O_j` returns `WC_(j, (x-1) % size(WB_j))`, which equals to `v`.
 
 - Case 3: `I_i` is `pop()` taking the irregular path.
 
@@ -577,12 +579,12 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
     `(TOP)`, it is sufficient to prove that `I` is linearized before `I_i`. If `I` is `pop()`, then
     it is so thanks to the coherence of `top`. Now suppose `I` is `steal()`. Let `O_k` be the first
     `push()` invocation in `O_(j+1)`, ..., `O_(o-1)`. (If no such invocation exists, let `k = o`.)
-    By the coherence of `top`, all of `O_i`, ..., `O_(k-1)` should read `top >= x` at `'L204`, and
+    By the coherence of `top`, all of `O_j`, ..., `O_(k-1)` should read `top >= x` at `'L204`, and
     take the irregular path. Thus it is sufficient to prove that the value `I` read from `bottom` at
     `'L404` should be coherence-before `WF_k`. Suppose otherwise. Then there is a release-acquire
     synchronization from `WF_k` to `I`'s read from `bottom` at `'L404`, so `O_j`'s read from `top`
-    at `'L204` or `'L213` is coherence-before `I`'s write to `top` at `'L410`. But this contradicts
-    with the assumption.
+    at `'L204` or `'L213` is coherence-before `I`'s write to `top` at `'L410`. But this is
+    impossible due to the coherence of `top`.
 
     Thus we have `b_i = x <= t_i`, and it is legit for `I_i` to go to `'L207`, restore the original
     value of `bottom`, and return `EMPTY`.
@@ -607,16 +609,16 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
     sufficient to prove that `I` is linearized before `I_i`. If `I` is `pop()`, then it is so thanks
     to the coherence of `top`. Now suppose `I` is `steal()`. Let `O_k` be the first `push()`
     invocation in `O_(j+1)`, ..., `O_(o-1)`. (If no such invocation exists, let `k = o`.) By the
-    coherence of `top`, all of `O_i`, ..., `O_(k-1)` should be `pop()` taking the irregular
+    coherence of `top`, all of `O_j`, ..., `O_(k-1)` should be `pop()` taking the irregular
     path. Thus it is sufficient to prove that the value `I` read from `bottom` at `'L404` should be
     coherence-before `WF_k`. Suppose otherwise. Then there is a release-acquire synchronization from
     `WF_k` to `I`'s read from `bottom` at `'L404`, so `O_j`'s update of `top` from `x-1` to `x` at
-    `'L213` is coherence-before `I`'s write `top = x-1` at `'L410`. But this is impossible due to
-    the coherence of `top`.
+    `'L213` is coherence-before `I`'s write to `top` at `'L410`. But this is impossible due to the
+    coherence of `top`.
 
-    By `(TOP)`, `x-1 <= t_i`, and the fact that `I_i` writes `x` to `top`, we have `t_i = x-1`. Thus
-    `t_i = x-1 = (b_i)-1`, and it is legit to pop the value from the `bottom` end of the deque and
-    increase `top`.
+    From `x-1 <= t_i` and the fact that `I_i` writes `x` to `top`, we have `t_i = x-1`. Thus `t_i =
+    x-1 = (b_i)-1`, and it is legit to pop the value from the `bottom` end of the deque and increase
+    `top`.
 
     `I_i` returns the right value for roughly the same reason as above.
 
@@ -668,38 +670,38 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
   Let's prove that `y <= t_i`. Consider the invocation `I` that writes `y` to `top`. By `(TOP)`, it
   is sufficient to prove that `I` is linearized before `I_i`. Suppose `I` is `pop()`. Let `j` be
   such an index that `I = O_j`. From the fact that `I` writes `y` to `top`, we know that `I` is
-  `pop()` taking the irregular path.  Also, there is a release-acquire synchronization from `I`'s
-  write to `top` at `'L213` to `I_i`'s read from `top` at `'L401-'L402`, and `j <= k` holds. Since
-  `y < x`, it is not the case that `O_j`, ..., `O_k` are all `pop()` taking the irregular path. Thus
-  `I = O_j` should be linearized before `I_i`.  If `I` is `steal()`, then there is a release-acquire
+  `pop()` taking the irregular path. Since there is a release-acquire synchronization from `I`'s
+  write to `top` at `'L213` to `I_i`'s read from `top` at `'L401-'L402`, we have `j <= k`. Since `y
+  < x`, it is not the case that `O_j`, ..., `O_k` are all `pop()` taking the irregular path. Thus `I
+  = O_j` should be linearized before `I_i`.  If `I` is `steal()`, then there is a release-acquire
   synchronization from `I`'s write to `top` at `'L410` to `I_i`'s read from `top` at
   `'L401-'L402`. Thus the value `I_i` read from `bottom` at `'L404` is coherence-after-or the value
   `I` read from `bottom` at `'L404`. Thus `I` is linearized before `I_i`.
 
-  By `(TOP)`, `y <= t_i`, and the fact that `I_i` writes `y+1` to `top`, we have `t_i = y`. Thus
-  `t_i = y <= x-1 = (b_i)-1`, and it is legit to steal the value from the `top` end of the deque and
-  increase `top`.
+  From `y <= t_i` and the fact that `I_i` writes `y+1` to `top`, we have `t_i = y`. Thus `t_i = y <=
+  x-1 = (b_i)-1`, and it is legit to steal the value from the `top` end of the deque and increase
+  `top`.
 
 
-  It remains to prove that `I_i` returns the right value. Since `I_i` reads `bottom > y`, there
-  exists a `push()` invocation that pushed to the index `y` and writes `bottom = y+1`.  Let `O_k` be
-  the last such an invocation in `I_0`, ..., `I_(n-1)`, and `v` be the value `O_k` pushed. It is
+  It remains to prove that `I_i` returns the right value. Since `x > y`, there exists a `push()`
+  invocation that pushed to the index `y` and writes `bottom = y+1`.  Let `O_k` be the last such an
+  invocation in `I_0`, ..., `I_(n-1)`, and `v` be the value `O_k` pushed. By `(CONTENTS)`, it is
   sufficient to prove that `O_k` is linearized before `I_i`, and `I_i` returns `v`.
 
-  Let's first prove that for all regular `pop()` invocation `J` that writes `bottom = y` at `'L202`,
-  `J` should be linearized before `I_i`. In order for `J` to enter the regular path, `J` should have
-  read from `top` a value `<= y-1` at `'L204`. Then by the synchronization of the seqcst-fences from
-  `J` to `I_i` via `top`, the value `I_i` read from `bottom` at `'L404` is coherence-after-or the
-  value written by `J` at `'L202`. Thus `J` is linearized before `I_i`.
+  Let's first prove that for all regular `pop()` invocation `O_j` that writes `bottom = y` at
+  `'L202`, `O_j` should be linearized before `I_i`. In order for `O_j` to enter the regular path,
+  `O_j` should have read from `top` a value `<= y-1` at `'L204`. Then by the synchronization of the
+  seqcst-fences from `O_j` to `I_i` via `top`, the value `I_i` read from `bottom` at `'L404` is
+  coherence-after-or `WF_j`. Thus `J` is linearized before `I_i`.
 
-  Now let's prove that `O_k` is linearized before `I_i`. If `O_k` is the only such an invocation
-  that writes `bottom = y+1` at `'L110`, then the value `I_i` read from `bottom` at `'L404` should
-  be coherence-after-or `WL_k`. Otherwise, let `O_l` be the last such another invocation, Then there
+  Now let's prove that `O_k` is linearized before `I_i`. By the construction of the linearization
+  order, it is sufficient to prove that the value `I_i` read from `bottom` at `'L404` is
+  coherence-after-or `WF_k`. It is obvious if `O_k` is the only such an invocation that writes
+  `bottom = y+1` at `'L110`. Otherwise, let `O_l` be the last such another invocation. Then there
   should be a regular `pop()` invocation `O_m` such that `l < m < k`, and `O_m` writes `bottom = y`
   at `'L202`. Thus `O_m` is linearized before `I_i`, and the value `I_i` read from `bottom` is
-  coherence-after-or `WL_m`. Since `I_i` should read `bottom >= y+1`, the value `I_i` read from
-  `bottom` should be coherence-after-or `WL_k`. In either case, `O_k` should be linearized before
-  `I_i`.
+  coherence-after-or `WL_m`. Since `I_i` should have read `bottom >= y+1`, the value `I_i` read from
+  `bottom` at `'L404` should be coherence-after-or `WF_k`.
 
   Also, for all `l > k`, `b_l > y` should hold. This is because there are no regular `pop()`
   invocations that writes `bottom = y` after `O_k`.
@@ -721,40 +723,41 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
   <!-- ---------- -->
   <!-- read t f (<= y-1) -->
 
-  Let `O_l` be the owner invocation that writes `WB_l` to `buffer` that is read by `I_i`. Let `z`
-  and `w` be the values `O_k` read from `bottom` at `'L101` and `top` at `'L102`, respectively.
+  Let `O_l` be the owner invocation that writes `WB_(l+1)` to `buffer` that is read by `I_i`. Let
+  `z` and `w` be the values `O_k` read from `bottom` at `'L101` and `top` at `'L102`, respectively.
   Since `I_i` is linearized after `O_k`, there is a release-acquire synchronization from `O_k`'s
-  write to `bottom` at `'L110` to `I_i`'s read from `bottom` at `'L404`. So we have `w <= y`, `WB_l`
-  is coherence-after-or `WB_k`, and the value `v` that `O_k` wrote to the buffer at `'L109` should
-  be acknowledged by `I_i` at `'L409`. Also, we have `view_beginning(O_k) <= view_end(I_i)`, as
-  required by `(SYNC)`.
+  write to `bottom` at `'L110` to `I_i`'s read from `bottom` at `'L404`. Thus we have `w <= y`
+  because `I_i` reads `top = y` once more at `'L410`, `WB_(l+1)` is coherence-after-or `WB_(k+1)`,
+  and the value `v` that `O_k` wrote to the buffer at `'L109` should be acknowledged by `I_i` at
+  `'L409`. Also, we have `view_beginning(O_k) <= view_end(I_i)`, as required by `(SYNC)`.
 
   + Case `l <= k`.
 
-    Then `WB_l = WB_k`, and `I_i` read the return value from `WB_l[y % size(WB_l)]`. The read value
-    should be coherence-after-or the value `v` written by `O_k` at `'L109`. Let's think of `O_m`
-    that overwrites to `WB_l[y % size(WB_l)]` after `O_k`. (If such `O_m` doesn't exist, then `I_i`
-    should have read `v` and the conclusion follows.) Since `O_m` is after `O_k` and it read
-    `bottom > y` at `'L101`, `O_m` is a `push()` operation that read `top > y` at `'L102`. Then
-    there is a release-acquire synchronization from `I_i`'s write to `top` at `'L410` to `O_m`'s
-    read from `top` at `'L102` so that `I_i`'s read from `WB_l[y % size(WB_l)]` at `'L409` happens
-    before `O_m`'s write to the same location. Thus `I_i` should have read `v` at `'L409`.
+    Then `WB_(l+1) = WB_(k+1)`, and `I_i` read the return value from `WB_(l+1)[y %
+    size(WB_(l+1))]`. This value should be coherence-after-or the value `v` written by `O_k` at
+    `'L109`. Let's think of `O_m` that overwrites to `WB_(l+1)[y % size(WB_(l+1))]` after `O_k`. (If
+    such `O_m` doesn't exist, then `I_i` should have read `v` and the conclusion follows.) Since
+    `O_m` is after `O_k` and it read `bottom > y` at `'L101`, `O_m` is a `push()` operation that
+    read `top > y` at `'L102`. Then there is a release-acquire synchronization from `I_i`'s write to
+    `top` at `'L410` to `O_m`'s read from `top` at `'L102` so that `I_i`'s read from `WB_(l+1)[y %
+    size(WB_(l+1))]` at `'L409` happens before `O_m`'s write to the same location. Thus `I_i` should
+    have read `v` at `'L409`.
 
   + Case `k < l`.
 
-    Let's prove by induction that for all `m ∈ [k, l]`, `WC_(m, y % size(WB_m)) = v`. By assumption,
-    it holds for `m = k`. Now suppose that it holds for `m = n` for some `n ∈ [k, l)` and let's
-    prove that it holds for `m = n+1`. Let `f` and `g` be the values `O_(n+1)` read from `bottom`
-    and `top`. Then we have `g <= w <= y < b_(n+1) = f`. Since `k < n+1`, `O_(n+1)` is not a regular
-    `pop()` that writes `bottom = y`. If `O_(n+1)` is resizing, then since `g <= y < f`, `WC_(n, y %
+    Let's prove by induction that for all `m ∈ [k+1, l+1]`, `WC_(m, y % size(WB_m)) = v`. By
+    assumption, it holds for `m = k+1`. Now suppose that it holds for `m = n` for some `n ∈ [k+1,
+    l+1)` and let's prove that it holds for `m = n+1`. Let `f` and `g` be the values `O_n` read from
+    `bottom` and `top`. Then we have `g <= w <= y < b_n = f`. Since `k < n`, `O_n` is not a regular
+    `pop()` that writes `bottom = y`. If `O_n` is resizing, then since `g <= y < f`, `WC_(n, y %
     size(WB_n))` is copied to `WC_(n+1, y % size(WB_(n+1)))`. Thus we have `WC_(n+1, y %
     size(WB_(n+1))) = v`.
 
     By the release-acquire synchronization from `O_l`'s write to `buffer` at `'L307` to `I_i`'s read
     from `buffer` at `'L408`, the value `I_i` read from the buffer's content at `'L409` should be
-    coherence-after-or the value `WC_(l, y % size(WB_l)) = v` that `O_l` wrote at `'L305`. Similarly
-    to the above case, `I_i`'s read happens before any overwrites to the same location. Thus `I_i`
-    should have read `v` at `'L409`.
+    coherence-after-or the value `WC_(l+1, y % size(WB_(l+1))) = v` that `O_l` wrote at
+    `'L305`. Similarly to the above case, `I_i`'s read happens before any overwrites to the same
+    location. Thus `I_i` should have read `v` at `'L409`.
 
   <!-- We also prove `t_i <= y` as follows. Consider the invocation `I` that writes `y+2` to `top`. If -->
   <!-- `I` is `pop()` whose last write to `bottom` is `WL_I`, then `I` should have read `y+1` from `top` -->
@@ -771,7 +774,7 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
 
   Let `x` and `y` be the values `I_i` read from `bottom` at `'L404` and `top` at `'L401`,
   respectively. Since `I_i` returns `EMPTY`, `x <= y` holds. Also, either `x = b_i` or `x = (b_i)-1`
-  holds by the definition of `push()` and `pop()`.
+  holds by the construction of linearization order and the definition of `push()` and `pop()`.
 
   It is sufficient to prove that `b_i <= t_i`, since then it will be legit to return `EMPTY`.
 
@@ -780,11 +783,11 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
     We prove `y <= t_i` as follows. Consider the invocation `I` that writes `y` to `top`. By
     `(TOP)`, it is sufficient to prove that `I` is linearized before `I_i`. Suppose `I` is
     `pop()`. Let `j` be such an index that `I = O_j`. Then there is a release-acquire
-    synchronization from `O_j`'s write to `top` at `'L213` and `I_i` read from `top` at
-    `'L401-'L402`, and `x` should be coherence-after-or `WF_j`. Thus `O_j` should be linearized
-    before `I_i`. If `I` is `steal()`, then by a release-acquire synchronization from `I`'s write to
-    `top` at `'L410` to `I_i`'s read from `top` at `'L401-'L402`, `x` should be coherence-after-or
-    the value `I` read from `bottom` at `'L404`. Thus `I` should be linearized before `I_i`.
+    synchronization from `I`'s write to `top` at `'L213` and `I_i` read from `top` at `'L401-'L402`,
+    and `x` should be coherence-after-or `WF_j`. Thus `I` should be linearized before `I_i`. If `I`
+    is `steal()`, then by a release-acquire synchronization from `I`'s write to `top` at `'L410` to
+    `I_i`'s read from `top` at `'L401-'L402`, `x` should be coherence-after-or the value `I` read
+    from `bottom` at `'L404`. Thus `I` should be linearized before `I_i`.
 
     Then we have `b_i = x <= y <= t_i`.
 
@@ -792,12 +795,11 @@ induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and 
 
     The value `x` should be read from `WF_j` for some `O_j` that is `pop()` taking the irregular
     path. Let `k` be such an index that `O_j = I_k`. Since `I_i` returns `EMPTY`, we have `k <
-    i`. Let `w` be the value `I_k` read from `top` at `'L204`. Since `O_j` takes the irregular path,
+    i`. Let `w` be the value `O_j` read from `top` at `'L204`. Since `O_j` takes the irregular path,
     we have `w >= x`. By `(BOTTOM)`, we have `b_k = x+1`.
 
-    If `I_k` returns `EMPTY`, then we have `x+1 = b_k <= t_k <= t_i`. If `I_k = O_j` returns a
-    value, then by `(TOP)`, we have `x+1 = t_(k+1) <= t_i`. In either case, we have `b_i = x+1 <=
-    t_i`.
+    If `O_j` returns `EMPTY`, then we have `x+1 = b_k <= t_k <= t_i`. If `O_j` returns a value, then
+    by `(TOP)`, we have `x+1 = t_(k+1) <= t_i`. In either case, we have `b_i = x+1 <= t_i`.
 
     <!-- <\!-- [O_j] -\-> -->
     <!-- <\!-- r b x+1 -\-> -->
