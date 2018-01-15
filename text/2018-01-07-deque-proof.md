@@ -222,12 +222,12 @@ object.
 <!-- By invalid pointer dereference we mean (1) null pointer dereference, (2) use-after-free, or (3)
 free-after-free. -->
 
-Pointer safety boils down to proving the safety of every access to the contents of the buffer
-pointed-to by `Inner`'s `self.buffer`, (1) since the other shared objects, namely `self.bottom`,
-`self.top`, and `self.buffer`, are just integers or pointers, and (2) accesses to thread-local
-storage are straightforwardly safe. It is worth noting that while the deque is shared among the
-owner and its stealers, only the owner is able to call `fn push()`, `fn pop()`, and `fn resize()`,
-thereby modifying `self.bottom` and `self.buffer`.
+For pointer safety, it is sufficient to prove that every access to the contents of the buffer
+pointed-to by `Inner`'s `self.buffer` is safe, since (1) the other shared objects, namely
+`self.bottom`, `self.top`, and `self.buffer`, are just integers or pointers, and (2) accesses to
+thread-local storage are straightforwardly safe. It is worth noting that while the deque is shared
+among the owner and its stealers, only the owner is able to call `fn push()`, `fn pop()`, and `fn
+resize()`, thereby modifying `self.bottom` and `self.buffer`.
 
 After `self.buffer` is initialized, it is modified only by the owner in `fn resize(): 'L307`. Since
 the contents inside a buffer is always accessed modulo the buffer's capacity (`'L109`, `'L211`,
@@ -246,8 +246,9 @@ user of Crossbeam, we only need to prove that:
   buffer is deferred to be dropped at `'L308`, the only reference to the buffer via `self.buffer` is
   removed at `'L307`.
 
-- With an `unprotected()` guard, we should not defer to drop an object that is accessed by another
-  thread, and should not access an object that is deferred to be dropped by another thread.
+- With an `unprotected()` guard, we should not defer to drop an object that is concurrently accessed
+  by another thread, and should not access an object that is concurrently deferred to be dropped by
+  another thread.
 
   It is indeed the case because (1) a buffer is deferred to be dropped only by the owner with a
   protected guard, and (2) stealers do not use an unprotected guard.
@@ -265,11 +266,12 @@ In order to answer the question, we first define the sequential specification of
 state* is a triple `(t, b, A)`, where `t` is the top index, `b` is the bottom index, and `A` is the
 array of the values within the indexes `[t, b)`. A `push()` invocation increases the bottom index
 `b`, and push the input value at the end of `A`. A `pop()` invocation decreases the bottom index `b`
-and pop the last value from `A`, if `t < b`; otherwise, touch nothing and return `EMPTY`. (As a
+and pop the last value from `A`, if `t < b`; otherwise, touches nothing and returns `EMPTY`. (As a
 special case, if `t+1 = b`, you can increase the top index `t` instead of decreasing the bottom
 index `b`.) A `steal()` invocation increases the top index `t` and pop the first value from `A`, if
-`t < b`; otherwise, touch nothing and return `EMPTY`. By `S -(I,R)-> S'` we denote the *transition
-relation* described above, from a deque state `S` into `S'` by the invocation `I` returning `R`.
+`t < b`; otherwise, touches nothing and returns `EMPTY`. By `S -(I,R)-> S'` we denote the
+*transition relation* described above, from a deque state `S` into `S'` by the invocation `I`
+returning `R`.
 
 A shared object is **linearizable** as a deque if the following holds:
 
@@ -284,21 +286,22 @@ A shared object is **linearizable** as a deque if the following holds:
 >
 > - (SEQ) Initially, `(t_0, b_0, A_0) = (0, 0, [])` holds. Furthermore, for all `i`, `(t_i, b_i,
 >   A_i) -(signature(I_i),ret(I_i))-> (t_(i+1), b_(i+1), A_(i+1))` holds. In other words, the
->   invocations `I_`, ..., `I_(n-1)` return outputs *as if* the invocations are sequentially
+>   invocations `I_0`, ..., `I_(n-1)` return outputs *as if* the invocations are sequentially
 >   (i.e. non-concurrently) executed to a deque in the linearization order.
 
-Here, by `view_beginning(I)` and `view_end(I)` we mean the thread `I`'s view at the beginning and
-the end of the invocation. A view `v1` is less than or equal to another view `v2`, denoted by `v1 <=
-v2`, if for any location `l`, `v1[l] <= v2[l]` holds; and `v1` is less than `v2`, denoted by `v1 <
-v2`, if (1) `v1 <= v2`, and (2) there exists a location `l` such that `v1[l] < v2[l]`. By `I <V J`
-we mean `view_end(I) < view_beginning(J)`. Also, `signature(I)` and `ret(I)` are the function call
-signature and the return value of `I`.
+Here, by `signature(I)` and `ret(I)` we mean the function call signature and the return value of
+`I`. Also, by `I <V J` we mean `view_end(I) < view_beginning(J)`, and by `view_beginning(I)` and
+`view_end(I)` we mean the thread `I`'s view at the beginning and the end of the invocation. A view
+`v1` is less than or equal to another view `v2`, denoted by `v1 <= v2`, if for any location `l`,
+`v1[l] <= v2[l]` holds; and `v1` is less than `v2`, denoted by `v1 < v2`, if (1) `v1 <= v2`, and (2)
+there exists a location `l` such that `v1[l] < v2[l]`.
+
 
 In addition to linearizability, we require that a matching pair of `push()` and `steal()`
 synchronize like a matching pair of a release-store and an acquire-load:
 
-> - (SYNC) If a value is `push()`ed by an invocation `I` and then `steal()`ed by `J`, then
->   `view_beginning(I) <= view_end(J)` holds.
+> - (SYNC) If a value is `push()`ed by an invocation `I` and then `steal()`ed by an invocation `J`,
+>   then `view_beginning(I) <= view_end(J)` holds.
 
 Note that a similar property for a matching pair of `push()` and `pop()` is a corollary of
 linearizability, as only the owner is able to call `push()` and `pop()` and the `push()` should be
@@ -342,11 +345,12 @@ owner's invocations, sorted according to the program order. We construct a full 
 by inserting stealers' invocations into it.
 
 Note that every owner's invocation writes to `bottom`, and every stealers' invocation reads from
-`bottom` at `'L404`. We classify the stealers' invocations into "groups" `{G_i}` as follows:
+`bottom` at `'L404`. Using `bottom`, we classify the stealers' invocations into "groups" `{G_i}` as
+follows:
 
 - For a stealer's invocation `S`, if `S` reads the initial value from `bottom`, then `S ∈
-  G_(-1)`. Otherwise, let `O_i` be the owner's invocation that writes to `bottom` a value read by
-  `S`.
+  G_(-1)`. Otherwise, let `O_i` be such an owner's invocation that `S` read from `bottom` a value
+  written by` O_i`.
 
 - If `S` returns `EMPTY`, then `S ∈ G_i`.
 
@@ -379,18 +383,6 @@ Let `WF_i` and `WL_i` be `O_i`'s first and last write to `bottom`.
   Since `view_beginning(I)[loc] < view_end(J)[loc]` holds, it is not the case that
   `view_beginning(I)[loc] < view_end(J)[loc]` holds.
 
-- > (VIEW-BOTTOM-OWNER): For arbitrary `i`, since `O_(i-1)` wrote `WF_(i-1)`, `WL_(i-1)` and `O_i`
-  wrote `WF_i`, `WL_i`, we have `Timestamp(WL_(i-1)) <= view_beginning(O_i)[bottom] <
-  Timestamp(WF_i)`. Similarly, we have `Timestamp(WL_i) <= view_end(O_i)[bottom] <
-  Timestamp(WF_(i+1))`.
-
-  FIXME: remove it
-
-- > (VIEW-BOTTOM-STEAL): For arbitrary `i` and `S ∈ G_i`, since `S` read `WF_i` or a later value, we
-  have `Timestamp(WF_i) <= view_end(S)[bottom]`.
-
-  FIXME: remove it
-
 Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O_i` read from
 `bottom` at `'L201`.
 
@@ -401,15 +393,16 @@ Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O
   tries to compare-and-swap (CAS) `top` from `x-1` to `x` at `'L213`. Regardless of whether the CAS
   succeeds or fails, `O_i` reads or writes `top >= x`.
 
-  It is worth nothing that it is necessary for the CAS at `'L213` to be strong, i.e. it the CAS does
-  not spuriously fail, for this lemma to hold.
+  It is worth nothing that for this lemma to hold, it is necessary for the CAS at `'L213` to be
+  strong, i.e. it the CAS does not spuriously fail.
 
-- > (IRREGULAR-STEAL): Let `S` be `steal()` that reads from `bottom` a value written by `O_i` and
-  returns a value, and `y` be the value `S` writes to `top` at `'L410`. Then `y < x` holds.
+- > (IRREGULAR-STEAL): Let `S` be a successful `steal()` that reads from `bottom` a value written by
+  `O_i` and returns a value, and `y` be the value `S` writes to `top` at `'L410`. Then `y < x`
+  holds.
 
-  If `S` read `bottom = x-1` written by `O_i` at `'L202`, then `y <= x-1`. Otherwise, `S` read
-  `bottom = x` written by `O_i` at `'L207` or `'L216`. We already know `y <= x` from the condition
-  at `'L405`, so suppose `y = x` and let's derive a contradiction.
+  If `S` read `bottom = x-1` written by `O_i` at `'L202`, then `y <= x-1` from the condition at
+  `'L405`. Otherwise, `S` read `bottom = x` written by `O_i` at `'L207` or `'L216`. We already know
+  `y <= x` from the condition at `'L405`, so suppose `y = x` and let's derive a contradiction.
 
   + Case `O_i` read `top >= x` at `'L204`.
 
@@ -442,7 +435,8 @@ For `(VIEW)`, it is sufficient to prove that:
 4. `(VIEW-STEAL-INTRA-GROUP)`: for all `i` and `S, S' ∈ G_i`, if `S` is placed before `S'`, then it
    is not the case that `S' <V S`.
 
-(Note that what would be `(VIEW-OWNER-OWNER)` is obvious.)
+(Note that what would be `(VIEW-OWNER-OWNER)` is obvious from the fact that `{O_i}` is sorted
+according to the program order.)
 
 #### Proof of `(VIEW-OWNER-STEAL)`
 
@@ -454,18 +448,18 @@ view_end(S)[bottom]`, and by `(VIEW-LOC)`, it is not the case that `S <V O_i`.
 #### Proof of `(VIEW-STEAL-OWNER)`
 
 If `S` returns `EMPTY`, then `view_beginning(S)[bottom] <= Timestamp(WL_i) < Timestamp(WL_j) <=
-view_end(O_j)[bottom]`.
+view_end(O_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
 
-Now suppose `S` returns a value. Let `O_k` be the owner invocation that writes to `bottom` a value
-read by `S` at `'L404`. Then for all `l ∈ (i, k]`, `O_k` is `pop()` taking the irregular path. If `k
-< j`, then `view_beginning(S)[bottom] <= Timestamp(WL_k) < Timestamp(WL_j) <=
-view_end(O_j)[bottom]`. Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values `O_j` read from
-`bottom` at `'201` and `top` at `'204`, respectively. Then we have `x-1 <= y` by the fact that `O_j`
-is a `pop()` taking the irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and
-`x <= view_end(O_j)[top]` by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <=
-view_end(O_j)[top]`.
+Now suppose `S` returns a value. Let `O_k` be such an owner invocation that the value `S` read from
+`bottom` at `'L404` is written by `O_k`. Then for all `l ∈ (i, k]`, `O_l` is `pop()` taking the
+irregular path. If `k < j`, then `view_beginning(S)[bottom] <= Timestamp(WL_k) < Timestamp(WL_j) <=
+view_end(O_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
 
-In either case, by `(VIEW-LOC)`, it is not the case that `O_j <V S`.
+Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values `O_j` read from `bottom` at `'201` and `top`
+at `'204`, respectively. Then we have `x-1 <= y` by the fact that `O_j` is a `pop()` taking the
+irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x <= view_end(O_j)[top]`
+by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <= view_end(O_j)[top]`, and by
+`(VIEW-LOC)`, the conclusion follows.
 
 #### Proof of `(VIEW-STEAL-INTER-GROUP)`
 
@@ -473,23 +467,25 @@ In either case, by `(VIEW-LOC)`, it is not the case that `O_j <V S`.
 
   Then `S_j` should have returned `EMPTY`. If `S_i` read from `WF_i` or `WL_i`, then
   `view_beginning(S_i)[bottom] <= Timestamp(WL_i) < Timestamp(WF_j) <= view_ending(S_j)[bottom]`,
-  and by `(VIEW-LOC)`, the conclusion follows. Otherwise, let `x` be the value `O_(i+1)`, ..., `O_j`
-  read from `bottom` at `'L201`. Then we have `view_beginning(S_i)[top] < x-1` by
+  and by `(VIEW-LOC)`, the conclusion follows.
+  
+  Not suppose otherwise. Then `S_i` should have returned a value. Let `x` be the value `O_(i+1)`,
+  ..., `O_j` read from `bottom` at `'L201`. We have `view_beginning(S_i)[top] < x-1` by
   `(IRREGULAR-STEAL)`, and `x-1 <= view_end(S_j)[top]` by `(IRREGULAR-TOP)` and the fact that `S_j`
   read `x-1` or `x` from `bottom` at `'L404`. By `(VIEW-LOC)`, the conclusion follows.
 
 - Case 2: Otherwise.
 
   Let `O_k` be such an invocation that is not `pop()` taking the irregular path and `k ∈ (i,
-  j]`. Then we have `view_beginning(S_i)[bottom] < Timestamp(WF_k) <= view_ending(S_j)[bottom]`, and
-  by `(VIEW-LOC)`, the conclusion follows.
+  j]`. Then we have `view_beginning(S_i)[bottom] < Timestamp(WF_k) <= Timestamp(WF_j) <=
+  view_ending(S_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
 
 #### Proof of `(VIEW-STEAL-INTRA-GROUP)`
 
 - Case 1: `S, S' ∈ STEAL`.
 
   Suppose `S` read the value `y` from `top` at `'L401`, and `S'` read the value `w` from `top` at
-  `'L401`. By the construction, `y < w`. Thus it is not the case that `S' <V S`.
+  `'L401`. By the construction, `y < w`. By `(VIEW-LOC)`, the conclusion follows.
 
 - Case 2: `S, S' ∈ STEAL_EMPTY`. Obvious from the construction.
 
@@ -497,14 +493,14 @@ In either case, by `(VIEW-LOC)`, it is not the case that `O_j <V S`.
 
   Let `b` be the value of `WL_i`; `x` and `x'` be the values `S` and `S'` read from `bottom` at
   `'L404`, respectively; and `y` and `y'` be the values `S` and `S'` read from `top` at `'L401`,
-  respectively. Since `S' ∈ STEAL`, we have `y < x`. Since `S' ∈ STEAL_EMPTY`, we have `b-1 <= x' <=
-  y'`.
+  respectively. Since `S' ∈ STEAL`, we have `y < x` from the condition at `'L405`. Since `S' ∈
+  STEAL_EMPTY`, we have `x' <= y'`.
 
   If `S` read from `bottom` a value written by `O_i`, then we have `y < x = b = x' <=
   y'`. Otherwise, then `S` read from `bottom` a value written by `O_j` for some `j > i`, and for all
   `k ∈ (i, j]`, `O_k` is `pop()` taking the irregular path. By `(IRREGULAR-STEAL)`, we have `y+1 <
-  b`, and then `y <= b-2 < b-1 <= x' <= y'`. In either case, we have `y < y'`, and by `(VIEW-LOC)`,
-  the conclusion follows.
+  b`. By the definition of `push()` and `pop()`, we have `b-1 <= x'`, and thus `y <= b-2 < b-1 <= x'
+  <= y'`. In either case, we have `y < y'`, and by `(VIEW-LOC)`, the conclusion follows.
 
 
 ## Proof of `(SEQ)` and `(SYNC)`
