@@ -233,9 +233,9 @@ After `self.buffer` is initialized, it is modified only by the owner in `fn resi
 the contents inside a buffer is always accessed modulo the buffer's capacity (`'L109`, `'L211`,
 `'L409`) and the buffer's size is always nonzero, there are no buffer overruns.
 
-Thus it remains to prove that the buffer is not used after freed. Thanks to Crossbeam, we don't need
-to take care of all the details of memory reclamation; [this RFC][rfc-relaxed-memory] says that as a
-user of Crossbeam, we only need to prove that:
+Thus it remains to prove that the buffer is not used after it has been freed. Thanks to Crossbeam,
+we don't need to take care of all the details of memory reclamation; [this RFC][rfc-relaxed-memory]
+says that as a user of Crossbeam, we only need to prove that:
 
 - When a buffer is deferred to be dropped (`'L308`), there are no longer references to the buffer in
   the shared memory, and no concurrent mutators introduce a reference to the buffer in the memory
@@ -361,7 +361,7 @@ follows:
 We will insert the invocations in `G_i` between `O_i` and `O_(i+1)`. Inside a group `G_i`, we give
 the linearization order as follows:
 
-- Let `STEAL^x` be the set of steal invocations tat stole an element at the index `x`, and
+- Let `STEAL^x` be the set of steal invocations that stole an element at the index `x`, and
   `STEAL_EMPTY` be the set of steal invocations that returns `EMPTY`. Let `STEAL` be `Union_x
   {STEAL^x}`.
 
@@ -394,7 +394,7 @@ Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O
   succeeds or fails, `O_i` reads or writes `top >= x`.
 
   It is worth nothing that for this lemma to hold, it is necessary for the CAS at `'L213` to be
-  strong, i.e. it the CAS does not spuriously fail.
+  strong, i.e. the CAS does not spuriously fail.
 
 - > (IRREGULAR-STEAL): Let `S` be a successful `steal()` that reads from `bottom` a value written by
   `O_i` and returns a value, and `y` be the value `S` writes to `top` at `'L410`. Then `y < x`
@@ -455,11 +455,11 @@ Now suppose `S` returns a value. Let `O_k` be such an owner invocation that the 
 irregular path. If `k < j`, then `view_beginning(S)[bottom] <= Timestamp(WL_k) < Timestamp(WL_j) <=
 view_end(O_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
 
-Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values `O_j` read from `bottom` at `'201` and `top`
-at `'204`, respectively. Then we have `x-1 <= y` by the fact that `O_j` is a `pop()` taking the
-irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x <= view_end(O_j)[top]`
-by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <= view_end(O_j)[top]`, and by
-`(VIEW-LOC)`, the conclusion follows.
+Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values `O_j` read from `bottom` at `'L201` and
+`top` at `'L204`, respectively. Then we have `x-1 <= y` by the fact that `O_j` is a `pop()` taking
+the irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x <=
+view_end(O_j)[top]` by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <=
+view_end(O_j)[top]`, and by `(VIEW-LOC)`, the conclusion follows.
 
 #### Proof of `(VIEW-STEAL-INTER-GROUP)`
 
@@ -962,7 +962,7 @@ stronger than the success argument." ([C11][c11] 7.17.7.4 paragraph 2). So inste
 the companion implementation. This C11 requirement may be fail-safe for most use cases, but can
 actually be slightly inefficient in this case.
 
-It is worth nothing that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
+It is worth noting that the CAS at `'L213` should be strong. Otherwise, a similar execution to the
 one above is possible, where the CAS at `'L213` reads `top = 0` and then spuriously fails.
 
 
