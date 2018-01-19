@@ -969,12 +969,31 @@ one above is possible, where the CAS at `'L213` reads `top = 0` and then spuriou
 ## Comparison to Target-dependent Implementations
 
 Alternatively, we can write a deque for each target architecture in order to achieve better
-performance. For example, [this paper][deque-bounded-tso] presents a variant of various deques in
-the "bounded TSO" x86 model, where you don't need to issue the expensive `mfence` barrier (think:
-seqcst-fence) in `pop()`. Also, [this paper][chase-lev-weak] presents a version of Chase-Lev deque
-for ARMv7 that doesn't issue `isync`-like fences, while the proposed implementation issues
-some. Probably `Consume` is relevant for the latter case. These further optimizations are left as
-future work.
+performance.
+
+We believe the proposed implementation is the most efficient in the x86-TSO model. Though [this
+paper][deque-bounded-tso] presents a variant of various deques in the "bounded x86-TSO" model, where
+you don't need to issue the expensive `mfence` barrier (think: seqcst-fence) in `pop()`.
+
+For ARM/POWER, you can further optimize the compilation result of the proposed implementation as
+follows:
+
+- `'L102` can be just plain load: `'L109` is the only synchronization target, and they have RW ctrl
+  dependency.
+
+- `'L408` can be just plain load: `'L409` is the only synchronization target, and they have RR addr
+  dependency. In an ideal world, this synchronizing dependency should be expressible in C11 using
+  the `Consume` ordering.
+
+- `'L404` can be just plain load, but `isync/isb` should be inserted right before `'L408`: `'L408`'s
+  read, `'L409`'s read, `'L410`'s read/write, and the end view of `steal()` in the successful case
+  are the synchronization targets, and they have RR/RW ctrl+`isync/isb` dependency.
+
+  We believe [this paper][chase-lev-weak] has a bug in their ARMv7 implementation of Chase-Lev
+  deque. Roughly speaking, they used a plain load for `'L404`, and put ctrl+`isync/isb` right after
+  `'L409`. But in that case, the reads at `'L408` and `'L409` can be reordered before `'L404`. See
+  the [this tutorial][arm-power] §4.2 on [the MP+dmb+ctrl litmus test][mp+dmb+ctrl] for more
+  details.
 
 
 
@@ -992,3 +1011,5 @@ future work.
 [cppatomic]: http://en.cppreference.com/w/cpp/atomic/atomic
 [n3710]: http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2013/n3710.html
 [c11]: www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf
+[mp+dmb+ctrl]: https://www.cl.cam.ac.uk/~pes20/arm-supplemental/arm033.html
+[arm-power]: https://www.cl.cam.ac.uk/~pes20/ppc-supplemental/test7.pdf
