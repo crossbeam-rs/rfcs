@@ -157,6 +157,10 @@ N/A
 Perhaps we could cram these atomic primitives into `crossbeam-utils`, but there
 will be plenty of them so it makes sense to dedicate a new crate.
 
+Also, there are possible complications with adding atomics to `crossbeam-utils`:
+`crossbeam-epoch` depends on `crossbeam-utils`, so if we were to add `EpochCell`
+to `crossbeam-utils`, it would create a cyclic dependency on `crossbeam-epoch`.
+
 # Unresolved questions
 
 The main question is: which atomic primitives do we need and how exactly
