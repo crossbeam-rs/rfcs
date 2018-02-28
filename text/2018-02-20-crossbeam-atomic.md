@@ -123,37 +123,8 @@ still be considered a low-level atomic primitive.
 Here's a suggestion for the public API (very similar to the `atomic` crate):
 
 ```rust
-// Atomics in Boost use the same number of locks. See here:
-// https://github.com/boostorg/smart_ptr/blob/develop/include/boost/smart_ptr/detail/spinlock_pool.hpp#L38
-const NUM_LOCKS: usize = 41;
-
-static LOCKS: [CachePadded<AtomicBool>; NUM_LOCKS] = unsafe { ::std::mem::zeroed() };
-
-union Atomic<T: Copy> {
-    // Use this when `size_of::<T>() <= size_of::<usize>()`.
-    //
-    // For example, in order to store a `val` into `atomic`, do:
-    //
-    // ```
-    // let mut value = 0usize;
-    // ptr::write_unaligned(&mut value as *mut T, val);
-    // self.atomic.store(value, ordering);
-    // ```
-    atomic: AtomicUsize,
-
-    // Use this when `size_of::<T>() > size_of::<usize>()`.
-    //
-    // Note that accessing this value requires locking a global spinlock.
-    // For example, in order to store a `val` into `cell`, do:
-    //
-    // ```
-    // let index = (&self as *const _ as usize) % NUM_LOCKS;
-    // while LOCKS[index].compare_and_swap(false, true, Acquire) {
-    //     ::std::thread::yield_now();
-    // }
-    // *(self.cell.get()) = val;
-    // LOCKS[index].store(false, Release);
-    // ```
+struct Atomic<T: Copy> {
+    // Transmuted to `AtomicUsize` when `size_of::<T>() != size_of::<usize>()`.
     cell: UnsafeCell<T>,
 }
 
@@ -162,7 +133,7 @@ impl<T: Copy> Atomic<T> {
     fn get_mut(&mut self) -> &mut T;
     fn into_inner(self) -> T;
 
-    // Returns `true` when `size_of::<T>() <= size_of::<usize>()`.
+    // Returns `true` when `size_of::<T>() != size_of::<usize>()`.
     fn is_lock_free() -> bool;
 
     fn load(&self, order: Ordering) -> T;
@@ -230,32 +201,7 @@ and [`AtomicInteger`](https://docs.oracle.com/javase/8/docs/api/java/util/concur
 in Java.
 
 ```rust
-union AtomicCell<T> {
-    // Use this when `size_of::<T>() <= size_of::<usize>()`.
-    //
-    // For example, in order to store a `val` into `atomic`, do:
-    //
-    // ```
-    // let mut value = 0usize;
-    // ptr::write_unaligned(&mut value as *mut T, val);
-    // self.atomic.store(value, ordering);
-    // ```
-    atomic: AtomicUsize,
-
-    // Use this when `size_of::<T>() > size_of::<usize>()`.
-    //
-    // Note that accessing this value requires locking a global spinlock.
-    // For example, in order to store a `val` into `cell`, do:
-    //
-    // ```
-    // // We're using the same `LOCKS` array from the `Atomic` API.
-    // let index = (&self as *const _ as usize) % NUM_LOCKS;
-    // while LOCKS[index].compare_and_swap(false, true, Acquire) {
-    //     ::std::thread::yield_now();
-    // }
-    // *(self.cell.get()) = val;
-    // LOCKS[index].store(false, Release);
-    // ```
+struct AtomicCell<T> {
     cell: UnsafeCell<T>,
 }
 
@@ -264,7 +210,7 @@ impl<T> AtomicCell<T> {
     fn get_mut(&mut self) -> &mut T;
     fn into_inner(self) -> T
 
-    // Returns `true` when `size_of::<T>() <= size_of::<usize>()`.
+    // Returns `true` when `size_of::<T>() != size_of::<usize>()`.
     fn is_lock_free() -> bool;
 
     fn set(&self, val: T);
@@ -285,6 +231,7 @@ impl<T: Copy> AtomicCell<T> {
 
 // That's a lot of methods - maybe we should select just a subset of them.
 impl AtomicCell<bool> {
+    // Maybe these should be operator impls (e.g. `impl ops::Add<bool> for AtomicCell<bool>`).
     fn and(&self, val: bool);
     fn nand(&self, val: bool);
     fn or(&self, val: bool);
@@ -304,6 +251,7 @@ impl AtomicCell<bool> {
 // Repeat this for `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `isize`, `usize`.
 // That's a lot of methods - maybe we should select just a subset of them.
 impl AtomicCell<i8> {
+    // Maybe these should be operator impls (e.g. `impl ops::Add<i8> for AtomicCell<i8>`).
     fn add(&self, val: i8);
     fn sub(&self, val: i8);
     fn and(&self, val: i8);
@@ -327,10 +275,12 @@ impl AtomicCell<i8> {
 ### 3. `AtomicRefCell<T>`
 
 This is just `RefCell<T>` that implements `Send` and `Sync`.
-It is essentially equivalent to `RwLock`, except faster in some specific circumstances.
+It is essentially equivalent to `RwLock<T>`, except `borrow()` and `borrow_mut()` panic
+if the value is already borrowed. It can also be faster than `RwLock<T>` under
+certain circumstances.
 
 Servo uses its own implementation of
-[`AtomicRefCell`](https://docs.rs/atomic_refcell/0.1.1/atomic_refcell/).
+[`AtomicRefCell<T>`](https://docs.rs/atomic_refcell/0.1.1/atomic_refcell/).
 See [this pull request](https://github.com/servo/servo/pull/14828).
 
 ```rust
