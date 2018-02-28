@@ -107,46 +107,455 @@ Here are some quick ideas for atomic primitives we might want to add to the crat
 Keep in mind that these are not real proposals yet - we should think them through
 more thoroughly in future RFCs.
 
-1. The [`atomic`](https://docs.rs/atomic/0.3.4/atomic/) crate generalizes atomics
-   in `std` into a single type `Atomic<T: Copy>`. The idea is that for small `T`s
-   we use atomics from `std` and fall back to spinlocks for big `T`s.
-   Implementations of `std::shared_ptr` in C++ work very similarly.
-   Note that all operations require specifying a memory ordering, so this is
-   still a low-level atomic primitive. We might want to move the crate into
-   `crossbeam-atomic`.
+### 1. `Atomic<T>`
 
-2. `AtomicCell<T>` - a higher-level alternative to `Atomic<T>`. It doesn't require
-   `T: Copy` and it is not possible to specify orderings. It should be possible
-   to store `Box`es or `Arc`s inside it (e.g. `AtomicCell<Option<Arc<T>>>`).
-   The best way of describing this primitive is: it works and is used almost
-   exactly like `Cell<T>`, except it is thread-safe. Just like with `Cell`,
-   `get` operation requires `T: Copy`, but `replace` doesn't.
-   Also note that `AtomicCell<Option<Box<T>>>` is equivalent to `AtomicOption<T>`.
-   Crate [`atomic_cell`](https://docs.rs/atomic_cell/0.1.0/atomic_cell/) has a
-   somewhat similar interface, but in it all operations rely on locking.
+The [`atomic`](https://docs.rs/atomic) crate generalizes atomics
+in `std` into a single type `Atomic<T>`. The idea is that for small `T`s
+we rely on an internal `AtomicUsize` and fall back to global spinlocks for big `T`s.
+Implementations of `std::atomic<T>` in C++ work very similarly, and we should
+have something like that in `crossbeam-atomic`.
 
-3. `HazardCell<T: HazardPtr>` - Similar to `AtomicCell<T>`, except it allows `get`
-   for some non-`Copy` types by using hazard pointers. The `get` operation returns
-   a value of type `HazardCellGuard<'hc, T>`. Type `T` can be one of:
-   `Box<_>`, `Option<Box<_>>`, `Arc<_>`, `Option<Arc<_>>`, `Weak<_>`, `Option<Weak<_>>`.
-   Note that `HazardCell<Arc<T>>` is a good alternative to `ArcCell<T>`.
-   This primitive should be the go-to answer for people asking for
-   `AtomicReference` in Rust.
+Type `T` is not fully generic; only types that implement `Copy` are accepted.
 
-4. `EpochCell<T>` - Similar to [`pinboard`](https://github.com/bossmc/pinboard),
-   [`EbrCell`](https://github.com/Firstyear/crossbeam-concread/pull/1), and
-   [`rcu_ptr`](https://github.com/martong/rcu_ptr) (in C++).
+Note that all operations require specifying a memory ordering, so this can
+still be considered a low-level atomic primitive.
 
-5. `Adder<T>` and `Accumulator<T>` - similar to e.g.
-   [`LongAdder`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/LongAdder.html)
-   and [`DoubleAccumulator`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/DoubleAccumulator.html)
-   in Java. These are essentially just atomic numbers with internal sharding that
-   reduces the cost of contention.
-   Crate [`counting-networks`](https://github.com/declanvk/counting-networks)
-   seems relevant here.
+Here's a suggestion for the public API (very similar to the `atomic` crate):
 
-6. [`AtomicRefCell`](https://docs.rs/atomic_refcell/0.1.1/atomic_refcell/) is used by
-   Servo. It might be a good idea to move it into Crossbeam.
+```rust
+// Atomics in Boost use the same number of locks. See here:
+// https://github.com/boostorg/smart_ptr/blob/develop/include/boost/smart_ptr/detail/spinlock_pool.hpp#L38
+const NUM_LOCKS: usize = 41;
+
+static LOCKS: [CachePadded<AtomicBool>; NUM_LOCKS] = unsafe { ::std::mem::zeroed() };
+
+union Atomic<T: Copy> {
+    // Use this when `size_of::<T>() <= size_of::<usize>()`.
+    //
+    // For example, in order to store a `val` into `atomic`, do:
+    //
+    // ```
+    // let mut value = 0usize;
+    // ptr::write_unaligned(&mut value as *mut T, val);
+    // self.atomic.store(value, ordering);
+    // ```
+    atomic: AtomicUsize,
+
+    // Use this when `size_of::<T>() > size_of::<usize>()`.
+    //
+    // Note that accessing this value requires locking a global spinlock.
+    // For example, in order to store a `val` into `cell`, do:
+    //
+    // ```
+    // let index = (&self as *const _ as usize) % NUM_LOCKS;
+    // while LOCKS[index].compare_and_swap(false, true, Acquire) {
+    //     ::std::thread::yield_now();
+    // }
+    // *(self.cell.get()) = val;
+    // LOCKS[index].store(false, Release);
+    // ```
+    cell: UnsafeCell<T>,
+}
+
+impl<T: Copy> Atomic<T> {
+    fn new(val: T) -> Atomic<T>;
+    fn get_mut(&mut self) -> &mut T;
+    fn into_inner(self) -> T;
+
+    // Returns `true` when `size_of::<T>() <= size_of::<usize>()`.
+    fn is_lock_free() -> bool;
+
+    fn load(&self, order: Ordering) -> T;
+    fn store(&self, val: T, order: Ordering);
+    fn swap(&self, val: T, order: Ordering) -> T;
+
+    fn compare_and_swap(&self, current: T, new: T, order: Ordering) -> T;
+
+    fn compare_exchange(
+        &self, 
+        current: T, 
+        new: T, 
+        success: Ordering, 
+        failure: Ordering
+    ) -> Result<T, T>;
+
+    pub fn compare_exchange_weak(
+        &self, 
+        current: T, 
+        new: T, 
+        success: Ordering, 
+        failure: Ordering
+    ) -> Result<T, T>;
+}
+
+impl Atomic<bool> {
+    fn fetch_and(&self, val: bool, order: Ordering) -> bool;
+    fn fetch_nand(&self, val: bool, order: Ordering) -> bool;
+    fn fetch_or(&self, val: bool, order: Ordering) -> bool;
+    fn fetch_xor(&self, val: bool, order: Ordering) -> bool;
+}
+
+// Repeat this impl for `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `isize`, `usize`.
+impl Atomic<i8> {
+    fn fetch_add(&self, val: i8, order: Ordering) -> i8;
+    fn fetch_sub(&self, val: i8, order: Ordering) -> i8;
+    fn fetch_and(&self, val: i8, order: Ordering) -> i8;
+    fn fetch_or(&self, val: i8, order: Ordering) -> i8;
+    fn fetch_xor(&self, val: i8, order: Ordering) -> i8;
+}
+```
+
+### 2. `AtomicCell<T>`
+
+Compared to `Atomic<T>`, this primitive is a bit easier to use
+(none of the methods need an ordering argument)
+and more general (only a few methods require `T: Copy`).
+All operations use the `SeqCst` ordering.
+
+Note that `AtomicCell<Option<Box<T>>>` would be equivalent to the `AtomicOption<T>` we currently
+have in Crossbeam (and by the way, our `AtomicOption<T>` has an unsound API). In fact,
+`AtomicCell<T>` is strictly more powerful and more general than `AtomicOption<T>`.
+
+The main idea behind `AtomicCell<T>` is that it behaves just like `Cell<T>`,
+except it is thread-safe. Every Rustacean should feel at home with it - it really
+doesn't have many surprises.
+
+Since this is a cell, we use a slightly different language for operations:
+`replace` rather than `swap`, `get` rather than `load`, `set` rather than `store`,
+and so on.
+
+`AtomicCell<T>` would be the closest equivalent of classes like
+[`AtomicBoolean`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicBoolean.html)
+and [`AtomicInteger`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicInteger.html)
+in Java.
+
+```rust
+union AtomicCell<T> {
+    // Use this when `size_of::<T>() <= size_of::<usize>()`.
+    //
+    // For example, in order to store a `val` into `atomic`, do:
+    //
+    // ```
+    // let mut value = 0usize;
+    // ptr::write_unaligned(&mut value as *mut T, val);
+    // self.atomic.store(value, ordering);
+    // ```
+    atomic: AtomicUsize,
+
+    // Use this when `size_of::<T>() > size_of::<usize>()`.
+    //
+    // Note that accessing this value requires locking a global spinlock.
+    // For example, in order to store a `val` into `cell`, do:
+    //
+    // ```
+    // // We're using the same `LOCKS` array from the `Atomic` API.
+    // let index = (&self as *const _ as usize) % NUM_LOCKS;
+    // while LOCKS[index].compare_and_swap(false, true, Acquire) {
+    //     ::std::thread::yield_now();
+    // }
+    // *(self.cell.get()) = val;
+    // LOCKS[index].store(false, Release);
+    // ```
+    cell: UnsafeCell<T>,
+}
+
+impl<T> AtomicCell<T> {
+    fn new(val: T) -> AtomicCell<T>;
+    fn get_mut(&mut self) -> &mut T;
+    fn into_inner(self) -> T
+
+    // Returns `true` when `size_of::<T>() <= size_of::<usize>()`.
+    fn is_lock_free() -> bool;
+
+    fn set(&self, val: T);
+    fn replace(&self, val: T) -> T;
+}
+
+impl<T: Default> AtomicCell<T> {
+    fn take(&self) -> T;
+}
+
+impl<T: Copy> AtomicCell<T> {
+    fn get(&self) -> T;
+
+    // We might want to restrict this method to primitive types rather than
+    // accepting any `T: Copy`.
+    fn compare_and_swap(&self, current: T, new: T) -> T;
+}
+
+// That's a lot of methods - maybe we should select just a subset of them.
+impl AtomicCell<bool> {
+    fn and(&self, val: bool);
+    fn nand(&self, val: bool);
+    fn or(&self, val: bool);
+    fn xor(&self, val: bool);
+
+    fn and_get(&self, val: bool) -> bool;
+    fn nand_get(&self, val: bool) -> bool;
+    fn or_get(&self, val: bool) -> bool;
+    fn xor_get(&self, val: bool) -> bool;
+
+    fn get_and(&self, val: bool) -> bool;
+    fn get_nand(&self, val: bool) -> bool;
+    fn get_or(&self, val: bool) -> bool;
+    fn get_xor(&self, val: bool) -> bool;
+}
+
+// Repeat this for `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `isize`, `usize`.
+// That's a lot of methods - maybe we should select just a subset of them.
+impl AtomicCell<i8> {
+    fn add(&self, val: i8);
+    fn sub(&self, val: i8);
+    fn and(&self, val: i8);
+    fn or(&self, val: i8);
+    fn xor(&self, val: i8);
+
+    fn add_get(&self, val: i8) -> i8;
+    fn sub_get(&self, val: i8) -> i8;
+    fn and_get(&self, val: i8) -> i8;
+    fn or_get(&self, val: i8) -> i8;
+    fn xor_get(&self, val: i8) -> i8;
+
+    fn get_add(&self, val: i8) -> i8;
+    fn get_sub(&self, val: i8) -> i8;
+    fn get_and(&self, val: i8) -> i8;
+    fn get_or(&self, val: i8) -> i8;
+    fn get_xor(&self, val: i8) -> i8;
+}
+```
+
+### 3. `AtomicRefCell<T>`
+
+This is just `RefCell<T>` that implements `Send` and `Sync`.
+It is essentially equivalent to `RwLock`, except faster in some specific circumstances.
+
+Servo uses its own implementation of
+[`AtomicRefCell`](https://docs.rs/atomic_refcell/0.1.1/atomic_refcell/).
+See [this pull request](https://github.com/servo/servo/pull/14828).
+
+```rust
+struct AtomicRefCell<T> {
+    state: AtomicUsize,
+    value: UnsafeCell<T>,
+}
+
+impl<T> AtomicRefCell<T> {
+    fn new(val: T) -> AtomicRefCell<T>;
+
+    fn into_inner(self) -> T;
+    fn get_mut(&mut self) -> &mut T;
+    fn replace(&self, val: T) -> T;
+
+    fn borrow(&self) -> AtomicRef<'_, T>;
+    fn borrow_mut(&self) -> AtomicRefMut<'_, T>;
+
+    fn try_borrow(&self) -> Result<AtomicRef<'_, T>, BorrowError>;
+    fn try_borrow_mut(&self) -> Result<AtomicRefMut<'_, T>, BorrowMutError>;
+}
+
+struct AtomicRef<'a, T: 'a> { ... }
+
+impl<'a, T> Deref for AtomicRef<'a, T> {
+    type Target = T;
+    // ...
+}
+
+struct AtomicRefMut<'a, T: 'a> { ... }
+
+impl<'a, T> Deref for AtomicRefMut<'a, T> {
+    type Target = T;
+    // ...
+}
+
+impl<'a, T> DerefMut for AtomicRefMut<'a, T> {
+    // ...
+}
+```
+
+### 4. `HazardCell<T>`
+
+`HazardCell<T>` is similar to `AtomicCell<T>`, except it allows `get` even for
+non-`Copy` types. However, this generalization comes at a cost because now
+`T` is more restricted - only `T`s that implement `Pointer` are accepted.
+
+Method `get` works even without `T: Copy` because it sets a hazard pointer in
+a TLS slot in order to prevent the value from destruction while it is being used.
+It is important to note that this hazard pointer mechanism
+would not delay destruction of garbage in the same way epoch-based GC does.
+We can destroy a garbage object as soon as it neither exists in the `HazardCell` nor
+in any active `HazardGuard<T>`s.
+See more [here](https://github.com/crossbeam-rs/rfcs/issues/25)
+under *"Eager garbage collection using HP"*.
+
+The details are a bit involved and there doesn't exist anything quite similar (AFAIK),
+so I'd like to stop here and follow up on `HazardCell<T>` later. Consider this idea
+very experimental. We still don't even have a proof of concept. :)
+
+This primitive would be a good alternative to `ArcCell<T>` and the closest equivalent of
+[`AtomicReference`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicReference.html)
+in Java.
+
+```rust
+struct HazardCell<T: Pointer> {
+    // `T` is just a pointer, so it is representable as a `usize`.
+    inner: AtomicUsize,
+    _marker: PhantomData<T>,
+}
+
+unsafe impl<T: Pointer> Send for HazardCell<T> {}
+unsafe impl<T: Pointer> Sync for HazardCell<T> {}
+
+// A `Pointer` is just a smart pointer represented as one word.
+unsafe trait Pointer {}
+unsafe impl<T> Pointer for Box<T> {}
+unsafe impl<T> Pointer for Option<Box<T>> {}
+unsafe impl<T> Pointer for Arc<T> {}
+unsafe impl<T> Pointer for Option<Arc<T>> {}
+unsafe impl<T> Pointer for Weak<T> {}
+unsafe impl<T> Pointer for Option<Weak<T>> {}
+
+impl<T: Pointer> HazardCell<T> {
+    fn new(val: T) -> HazardCell<T>;
+
+    fn get_mut(&mut self) -> &mut T;
+    fn into_inner(self) -> T;
+
+    fn get(&self) -> HazardGuard<T>;
+    fn set(&self, val: T);
+    fn replace(&self, val: T) -> HazardGuard<T>;
+
+    fn compare_and_set(
+        &self,
+        current: &T,
+        new: T,
+    ) -> Result<HazardGuard<T>, CasError<T>>;
+
+    fn compare_exchange(
+        &self,
+        current: &mut HazardGuard<T>,
+        new: T,
+    ) -> Result<(), T>;
+}
+
+impl<T: Pointer + Default> HazardCell<T> {
+    fn take(&self) -> HazardGuard<T>;
+}
+
+struct CasError<T> {
+    current: HazardGuard<T>,
+    new: T,
+}
+
+struct HazardGuard<T> { ... }
+
+impl<T> Deref for HazardGuard<T> {
+    type Target = T;
+    // ...
+}
+
+impl<T> Drop for HazardGuard<T> {
+    fn drop(&mut self) {
+        // Releases the hazard pointer and destroys the object
+        // if this is the last reference to it.
+        // ...
+    }
+}
+```
+
+### 5. `EpochCell<T>`
+
+The interface of `EpochCell<T>` looks almost identical to `HazardCell`,
+except it requires `T: 'static`.
+The bound is required because unlinked objects are handled by the epoch GC,
+which means garbage could potentially be dropped very late in the future.
+
+Generally speaking, you should use `HazardCell<T>` if:
+
+- the cell is rarely updated
+- you need eager destruction
+- the allocated values are big/expensive
+
+Use `EpochCell<T>` instead if:
+
+- the cell is often updated
+- lazy destruction is tolerable
+- the allocated values are small/cheap
+
+Other similar primitives:
+
+* [`pinboard`](https://github.com/bossmc/pinboard)
+* [`EbrCell`](https://github.com/Firstyear/crossbeam-concread/pull/1)
+* [`rcu_ptr`](https://github.com/martong/rcu_ptr) (in C++)
+
+```rust
+// We're using the same `Pointer` trait from the `HazardCell` API.
+struct EpochCell<T: Pointer + 'static> {
+    // `T` is just a pointer, so it is representable as a `usize`.
+    inner: AtomicUsize,
+    _marker: PhantomData<T>,
+}
+
+unsafe impl<T: Pointer + 'static> Send for EpochCell<T> {}
+unsafe impl<T: Pointer + 'static> Sync for EpochCell<T> {}
+
+impl<T: Pointer + 'static> EpochCell<T> {
+    fn new(val: T) -> EpochCell<T>;
+
+    fn get_mut(&mut self) -> &mut T;
+    fn into_inner(self) -> T;
+
+    fn get(&self) -> EpochGuard<T>;
+    fn set(&self, val: T);
+    fn replace(&self, val: T) -> EpochGuard<T>;
+
+    fn compare_and_set(
+        &self,
+        current: &T,
+        new: T,
+    ) -> Result<EpochGuard<T>, CasError<T>>;
+
+    fn compare_exchange(
+        &self,
+        current: &mut EpochGuard<T>,
+        new: T,
+    ) -> Result<(), T>;
+}
+
+struct CasError<T> {
+    current: EpochGuard<T>,
+    new: T,
+}
+
+impl<T: Pointer + Default + 'static> EpochCell<T> {
+    fn take(&self) -> EpochGuard<T>;
+}
+
+struct EpochGuard<T> {
+    guard: crossbeam_epoch::Guard,
+    // ...
+}
+
+impl<T> Deref for EpochGuard<T> {
+    type Target = T;
+    // ...
+}
+```
+
+### 6. `Adder<T>` and `Accumulator<T>`
+
+These primitives should be similar to classes like
+[`LongAdder`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/LongAdder.html)
+and
+[`DoubleAccumulator`](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/DoubleAccumulator.html)
+in Java. They are essentially just atomic numbers with internal sharding that
+reduces the cost of contention.
+
+I haven't thought too much about what the actual interface might look like in Rust, though.
+We need to do some research on counting networks. Leaving this as an open question.
+Help would be very welcome!
+
+Note: crate [`counting-networks`](https://github.com/declanvk/counting-networks)
+seems relevant here and might give us some inspiration.
 
 # Drawbacks
 
