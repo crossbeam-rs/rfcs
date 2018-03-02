@@ -356,13 +356,16 @@ unsafe impl<T: Pointer> Send for HazardCell<T> {}
 unsafe impl<T: Pointer> Sync for HazardCell<T> {}
 
 // A `Pointer` is just a smart pointer represented as one word.
-unsafe trait Pointer {}
-unsafe impl<T> Pointer for Box<T> {}
-unsafe impl<T> Pointer for Option<Box<T>> {}
-unsafe impl<T> Pointer for Arc<T> {}
-unsafe impl<T> Pointer for Option<Arc<T>> {}
-unsafe impl<T> Pointer for Weak<T> {}
-unsafe impl<T> Pointer for Option<Weak<T>> {}
+unsafe trait Pointer {
+    fn into_raw(self) -> usize;
+    unsafe fn from_raw(raw: usize) -> Self;
+}
+unsafe impl<T> Pointer for Box<T> { ... }
+unsafe impl<T> Pointer for Option<Box<T>> { ... }
+unsafe impl<T> Pointer for Arc<T> { ... }
+unsafe impl<T> Pointer for Option<Arc<T>> { ... }
+unsafe impl<T> Pointer for Weak<T> { ... }
+unsafe impl<T> Pointer for Option<Weak<T>> { .. }
 
 impl<T: Pointer> HazardCell<T> {
     fn new(val: T) -> HazardCell<T>;
