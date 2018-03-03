@@ -172,7 +172,7 @@ fn resize(&self, cap_new) {
     'L308: guard.defer(move || old.into_owned());
 }
 
-pub fn steal(&self) -> Retry<T> {
+pub fn steal(&self) -> Steal<T> {
     'L401: let mut t = self.top.load(Relaxed);
 
     'L402: let guard = epoch::pin_fence(); // epoch::pin(), but issue fence(SeqCst) even if it is re-entering
@@ -183,13 +183,12 @@ pub fn steal(&self) -> Retry<T> {
     'L405: let buffer = self.buffer.load(Acquire, &guard);
     'L406: let value = buffer.read(t % buffer.get_capacity(), Relaxed);
 
-    'L407: match self.top.compare_and_swap_weak(t, t + 1, Release) {
-    'L408:     Ok(_) => return Data(value),
-    'L409:     Err(t_old) => {
-    'L410:         mem::forget(value);
-    'L411:         return Retry;
-    'L412:     }
-    'L413: }
+    'L407: if self.top.compare_and_swap_weak(t, t + 1, Release, Relaxed).is_err() {
+    'L408:     mem::forget(value);
+    'L409:     return Retry;
+    'L410: }
+
+    'L411: Data(value)
 }
 ```
 
@@ -737,7 +736,7 @@ each case of `I_i`.
   write to `bottom` at `'L110` to `I_i`'s read from `bottom` at `'L403`. Thus we have `w <= y`
   because `I_i` reads `top = y` once more at `'L407`, `WB_(l+1)` is coherence-after-or `WB_(k+1)`,
   and the value `v` that `O_k` wrote to the buffer at `'L109` should be acknowledged by `I_i` at
-  `'L409`. Also, we have `view_beginning(O_k) <= view_end(I_i)`, as required by `(SYNC)`.
+  `'L406`. Also, we have `view_beginning(O_k) <= view_end(I_i)`, as required by `(SYNC)`.
 
   + Case `l <= k`.
 
@@ -989,17 +988,17 @@ follows:
 - `'L102` can be just plain load: `'L109` is the only synchronization target, and they have RW ctrl
   dependency.
 
-- `'L408` can be just plain load: `'L409` is the only synchronization target, and they have RR addr
+- `'L405` can be just plain load: `'L406` is the only synchronization target, and they have RR addr
   dependency. In an ideal world, this synchronizing dependency should be expressible in C11 using
   the `Consume` ordering.
 
-- `'L404` can be just plain load, but `isync/isb` should be inserted right before `'L408`: `'L408`'s
-  read, `'L409`'s read, `'L407`'s read/write, and the end view of `steal()` in the successful case
+- `'L404` can be just plain load, but `isync/isb` should be inserted right before `'L405`: `'L405`'s
+  read, `'L406`'s read, `'L407`'s read/write, and the end view of `steal()` in the successful case
   are the synchronization targets, and they have RR/RW ctrl+`isync/isb` dependency.
 
   We believe [this paper][chase-lev-weak] has a bug in their ARMv7 implementation of Chase-Lev
   deque. Roughly speaking, they used a plain load for `'L404`, and put ctrl+`isync/isb` right after
-  `'L409`. But in that case, the reads at `'L405-'L406` can be reordered before `'L404`. See
+  `'L406`. But in that case, the reads at `'L405-'L406` can be reordered before `'L404`. See
   the [this tutorial][arm-power] §4.2 on [the MP+dmb+ctrl litmus test][mp+dmb+ctrl] for more
   details.
 
