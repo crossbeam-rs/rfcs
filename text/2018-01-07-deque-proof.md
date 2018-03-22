@@ -394,6 +394,11 @@ Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O
 
 - > (IRREGULAR-TOP): We have [timestamp of `top = x`] <= `view_end(O_i)[top]`.
 
+  First of all, the notation "[timestamp of `top = x`]" is well-defined, since `top` is
+  monotonically increasing by CAS at `'L213` or `'L407`, so that there can be only one write `top =
+  x` for each value `x`. For this reason, in the rest of this RFC, we intentionally confuse the
+  values of `top` with the timestamps of `top`.
+
   Let `y` be the value `O_i` read from `top` at `'L204`. Since `O_i` is taking the irregular path,
   we have `x-1 <= y`. If `x <= y`, then the conclusion trivially follows. If `y = x-1`, then `O_i`
   tries to compare-and-swap (CAS) `top` from `x-1` to `x` at `'L213`. Regardless of whether the CAS
@@ -410,7 +415,7 @@ Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O
   `y <= x` from the condition at `'L404`, so suppose `y = x` and let's derive a contradiction.
 
   + Case `S` read `bottom = x` written at `'L207`.
-  
+
     Then `O_i` read `top >= x` at `'L204`. In order for `S` to read `bottom = x` at `'L403` and
     `O_i` to read `top >= x` at `'L204` at the same time, either `S`'s write to `top` at `'L407`
     should be promised before reading `bottom` at `'L403`, or `O_i`'s write to `bottom` at `'L207`
@@ -421,6 +426,11 @@ Suppose that `O_i` is `pop()` taking the irregular path, and `x` be the value `O
     fail, acquiring an arbitrarily high view, after which it is impossible to fulfill the
     promise. In short, there is a semantic dependency from `O_i`'s read from `top` at `'L204` to
     `O_i`'s write to `bottom` at `'L207`.
+
+    It is worth noting that in architectures, such as ARM and Power, usually it is enough to show
+    that there is syntactic dependency from `O_i`'s read from `top` at `'L204` to `O_i`'s write to
+    `bottom` at `'L207`. We have to reason semantic dependency because we are targeting C-like
+    languages, where compilers may perform various optimizations.
 
   + Case `S` read `bottom = x` written at `'L216`.
 
@@ -458,14 +468,16 @@ If `S` returns `EMPTY`, then `view_beginning(S)[bottom] <= Timestamp(WL_i) < Tim
 view_end(O_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
 
 Now suppose `S` returns a value. Let `O_k` be such an owner invocation that the value `S` read from
-`bottom` at `'L403` is written by `O_k`. Then for all `l ∈ (i, k]`, `O_l` is `pop()` taking the
-irregular path. If `k < j`, then `view_beginning(S)[bottom] <= Timestamp(WL_k) < Timestamp(WL_j) <=
-view_end(O_j)[bottom]`, and by `(VIEW-LOC)`, the conclusion follows.
+`bottom` at `'L403` is written by `O_k`. Then by the construction of the linearization order, for
+all `l ∈ (i, k]`, `O_l` is `pop()` taking the irregular path. If `k < j`, then
+`view_beginning(S)[bottom] <= Timestamp(WL_k) < Timestamp(WL_j) <= view_end(O_j)[bottom]`, and by
+`(VIEW-LOC)`, the conclusion follows.
 
 Now suppose `j ∈ (i, k]`. Let `x` and `y` be the values `O_j` read from `bottom` at `'L201` and
-`top` at `'L204`, respectively. Then we have `x-1 <= y` by the fact that `O_j` is a `pop()` taking
-the irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x <=
-view_end(O_j)[top]` by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <=
+`top` at `'L204`, respectively. Since `O_l` is `pop`() taking the irregular path for all `l ∈ (j,
+k]`, `O_k` also read `x` from `bottom` at `'L201`. Then we have `x-1 <= y` by the fact that `O_j` is
+a `pop()` taking the irregular path, `view_beginning(S)[top] < x-1` by `(IRREGULAR-STEAL)`, and `x
+<= view_end(O_j)[top]` by `(IRREGULAR-TOP)`. Thus we have `view_beginning(S)[top] < x-1 < x <=
 view_end(O_j)[top]`, and by `(VIEW-LOC)`, the conclusion follows.
 
 #### Proof of `(VIEW-STEAL-INTER-GROUP)`
@@ -475,7 +487,7 @@ view_end(O_j)[top]`, and by `(VIEW-LOC)`, the conclusion follows.
   Then `S_j` should have returned `EMPTY`. If `S_i` read from `WF_i` or `WL_i`, then
   `view_beginning(S_i)[bottom] <= Timestamp(WL_i) < Timestamp(WF_j) <= view_ending(S_j)[bottom]`,
   and by `(VIEW-LOC)`, the conclusion follows.
-  
+
   Not suppose otherwise. Then `S_i` should have returned a value. Let `x` be the value `O_(i+1)`,
   ..., `O_j` read from `bottom` at `'L201`. We have `view_beginning(S_i)[top] < x-1` by
   `(IRREGULAR-STEAL)`, and `x-1 <= view_end(S_j)[top]` by `(IRREGULAR-TOP)` and the fact that `S_j`
@@ -500,7 +512,7 @@ view_end(O_j)[top]`, and by `(VIEW-LOC)`, the conclusion follows.
 
   Let `b` be the value of `WL_i`; `x` and `x'` be the values `S` and `S'` read from `bottom` at
   `'L404`, respectively; and `y` and `y'` be the values `S` and `S'` read from `top` at `'L401`,
-  respectively. Since `S' ∈ STEAL`, we have `y < x` from the condition at `'L404`. Since `S' ∈
+  respectively. Since `S ∈ STEAL`, we have `y < x` from the condition at `'L404`. Since `S' ∈
   STEAL_EMPTY`, we have `x' <= y'`.
 
   If `S` read from `bottom` a value written by `O_i`, then we have `y < x = b = x' <=
@@ -528,8 +540,8 @@ with the same existentially quantified values of `t_i`, `b_i`, `A_i`:
 
 We prove that `{I_i}` satisfies `(SEQ)`, `(SYNC)`, `(BOTTOM)`, `(TOP)`, and `(CONTENTS)` by
 induction on `n`: suppose `I_0`, ..., `I_(i-1)` satisfies those conditions, and let's prove that
-there exists `b_i`, `t_i`, and `A_i` such that `I_i` also satisfies those conditions. We prove for
-each case of `I_i`.
+there exists `b_(i+1)`, `t_(i+1)`, and `A_(i+1)` such that `I_i` also satisfies those conditions. We
+prove for each case of `I_i`.
 
 - Case 1: `I_i` is `push()`.
 
@@ -546,12 +558,14 @@ each case of `I_i`.
   value `I` read from `bottom` at `'L403` should be coherence-after-or `WL_j`. Thus `I` is
   linearized after `I_i`, and by `(TOP)`, `t_i <= y+1` holds.
 
-  Then we have `t_i <= y+1 < y+2 <= x = b_i`, and it is legit to pop a value from the bottom end of
-  the deque and decrease `bottom`.
+  Then we have `t_i <= y+1 < y+2 <= x = b_i`, and it is legit to pop a value from the `bottom` end
+  of the deque and decrease `bottom`.
 
-  It remains to prove that `I_i` returns the right value. Let `O_k` be the last `push()` operation
-  in `I_0`, ..., `I_(i-1)` that pushed to the index `x-1` and writes `bottom = x`, and `v` be the
-  value `O_k` pushed. Thanks to `(CONTENTS)`, it is sufficient to prove that `I_i` returns `v`.
+  Now we choose `b_(i+1) = b_i - 1`, `t_(i+1) = t_i`, and `A_(i+1) = A_i`, i.e. `I_i` pops a value
+  from the `bottom` end of the deque. It remains to prove that `I_i` returns the right value. Let
+  `O_k` be the last `push()` operation in `I_0`, ..., `I_(i-1)` that pushed to the index `x-1` and
+  writes `bottom = x`, and `v` be the value `O_k` pushed. Thanks to `(CONTENTS)`, it is sufficient
+  to prove that `I_i` returns `v`.
 
   For all `l`, let `WB_l` be the value of `buffer` at the beginning of the invocation `O_l`. Also,
   for all `z`, let `WC_(l, z)` be the `z`-th contents of the buffer `WB_l` at the beginning of the
@@ -585,16 +599,18 @@ each case of `I_i`.
     We prove `x <= t_i` as follows. Consider the invocation `I` that writes `x` to `top`. By
     `(TOP)`, it is sufficient to prove that `I` is linearized before `I_i`. If `I` is `pop()`, then
     it is so thanks to the coherence of `top`. Now suppose `I` is `steal()`. Let `O_k` be the first
-    `push()` invocation in `O_(j+1)`, ..., `O_(o-1)`. (If no such invocation exists, let `k = o`.)
-    By the coherence of `top`, all of `O_j`, ..., `O_(k-1)` should read `top >= x` at `'L204`, and
-    take the irregular path. Thus it is sufficient to prove that the value `I` read from `bottom` at
-    `'L404` should be coherence-before `WF_k`. Suppose otherwise. Then there is a release-acquire
-    synchronization from `WF_k` to `I`'s read from `bottom` at `'L403`, so `O_j`'s read from `top`
-    at `'L204` or `'L213` is coherence-before `I`'s write to `top` at `'L407`. But this is
-    impossible due to the coherence of `top`.
+    `push()` invocation in `O_(j+1)`, ..., `O_(o-1)`. (If no such invocation exists, let `k =
+    o`. Also recall that `o` is the number of owner's method invocations.)  By the coherence of
+    `top`, all of `O_j`, ..., `O_(k-1)` should read `top >= x` at `'L204`, and take the irregular
+    path. Thus it is sufficient to prove that the value `I` read from `bottom` at `'L403` should be
+    coherence-before `WF_k`. Suppose otherwise. Then there is a release-acquire synchronization from
+    `WF_k` to `I`'s read from `bottom` at `'L403`, so `O_j`'s read from `top` at `'L204` or `'L213`
+    is coherence-before `I`'s write to `top` at `'L407`. But this is impossible due to the coherence
+    of `top`.
 
-    Thus we have `b_i = x <= t_i`, and it is legit for `I_i` to go to `'L207`, restore the original
-    value of `bottom`, and return `EMPTY`.
+    Thus we have `b_i = x <= t_i`, and `I_i` goes to `'L207`, restores the original value of
+    `bottom`, and returns `EMPTY`. We choose `b_(i+1) = b_i`, `t_(i+1) = t_i`, and `A_(i+1) = A_i`,
+    i.e. the deque is empty.
 
     <!-- [I] -->
     <!-- R t x-1 -->
@@ -623,11 +639,10 @@ each case of `I_i`.
     `'L213` is coherence-before `I`'s write to `top` at `'L407`. But this is impossible due to the
     coherence of `top`.
 
-    From `x-1 <= t_i` and the fact that `I_i` writes `x` to `top`, we have `t_i = x-1`. Thus `t_i =
-    x-1 = (b_i)-1`, and it is legit to pop the value from the `bottom` end of the deque and increase
-    `top`.
-
-    `I_i` returns the right value for roughly the same reason as above.
+    From `x-1 <= t_i` and the fact that `I_i` writes `x` to `top`, we have `t_i = x-1`, and thus
+    `t_i = x-1 = (b_i)-1`. We choose `b_(i+1) = b_i`, `t_(i+1) = t_i + 1`, and `A_(i+1) = A_i`,
+    i.e. `I_i` pops the value from the `bottom` end of the deque and increases `top`. It remains to
+    prove that `I_i` returns the right value, which is so for roughly the same reason above.
 
     <!-- r t x-2 -->
     <!-- ------- -->
@@ -690,10 +705,13 @@ each case of `I_i`.
   `top`.
 
 
-  It remains to prove that `I_i` returns the right value. Since `x > y`, there exists a `push()`
-  invocation that pushed to the index `y` and writes `bottom = y+1`.  Let `O_k` be the last such an
-  invocation in `I_0`, ..., `I_(n-1)`, and `v` be the value `O_k` pushed. By `(CONTENTS)`, it is
-  sufficient to prove that `O_k` is linearized before `I_i`, and `I_i` returns `v`.
+  Now we choose `b_(i+1) = b_i`, `t_(i+1) = t_i + 1`, and `A_(i+1) = A_i`, i.e. `I_i` steals a value
+  from the `top` end of the deque. It remains to prove that `I_i` returns the right value.
+
+  Since `x > y`, there exists a `push()` invocation that pushed to the index `y` and writes `bottom
+  = y+1`.  Let `O_k` be the last such an invocation in `I_0`, ..., `I_(n-1)`, and `v` be the value
+  `O_k` pushed. By `(CONTENTS)`, it is sufficient to prove that `O_k` is linearized before `I_i`,
+  and `I_i` returns `v`.
 
   Let's first prove that for all regular `pop()` invocation `O_j` that writes `bottom = y` at
   `'L202`, `O_j` should be linearized before `I_i`. In order for `O_j` to enter the regular path,
@@ -783,7 +801,8 @@ each case of `I_i`.
   respectively. Since `I_i` returns `EMPTY`, `x <= y` holds. Also, either `x = b_i` or `x = (b_i)-1`
   holds by the construction of linearization order and the definition of `push()` and `pop()`.
 
-  It is sufficient to prove that `b_i <= t_i`, since then it will be legit to return `EMPTY`.
+  It is sufficient to prove that `b_i <= t_i`, since then it will be legit to return `EMPTY` by
+  choosing `b_(i+1) = b_i`, `t_(i+1) = t_i`, and `A_(i+1) = A_i`.
 
   + Case `x = b_i`.
 
@@ -918,7 +937,6 @@ vaguely described what does "out-of-thin-air" mean.
 You can roughly regard the promising semantics as a precise definition of out-of-thin-air
 behaviors. Indeed, the promising semantics forbids this execution. See the proof of
 `(IRREGULAR-STEAL)` for more details.
-
 
 
 ## Optimal Orderings
