@@ -202,23 +202,24 @@ race and invalid pointer dereference.
 
 ### Absence of Data Races
 
-Every shared objects are atomically accessed so that there are no data races that invoke undefined
-behavior.
+All shared objects, except for the contents of `buffer`, are atomically accessed. For the contents
+of `buffer`, the stealers only atomically reads from the contents, and the owner only reads from and
+atomically writes to the contents. Thus there are no data races that invoke undefined behavior.
 
-In particular, the contents of the buffer should atomically accessed (`'L109`, `'L211`, `'L406`),
-because `fn push(): 'L109` and `fn steal(): 'L406` may concurrently access the contents of the
-`buffer`, while the former is writing to it. For example, the scheduler may preempt a `steal()`
-invocation right after `'L402` so that `t` read in `'L401` may be arbitrarily stale. Now, suppose
-that in a concurrent `push()` invocation, `b` equals to `t + buffer.get_capacity()` and it is
-overwriting a value to `buffer`'s `(b % buffer.get_capacity())`-th element. At the same time, the
-`steal()` invocation may wake up and read `buffer`'s `(t % buffer.get_capacity())`-th element.
+In particular, the stealers should atomically read from the contents of `buffer` (`'L406`) because
+`fn push(): 'L109` may concurrently writes to the same object. For example, the scheduler may
+preempt a `steal()` invocation right after `'L402` so that `t` read in `'L401` may be arbitrarily
+stale. Now, suppose that in a concurrent `push()` invocation, `b` equals to `t +
+buffer.get_capacity()` and it is overwriting a value to `buffer`'s `(b % buffer.get_capacity())`-th
+element. At the same time, the `steal()` invocation may wake up and read `buffer`'s `(t %
+buffer.get_capacity())`-th element.
 
 What's the cost of atomic access to the buffer? It is worth noting that the deque's item may be
 arbitrarily large, and [atomic accesses to large objects are probably blocking][cppatomic] in the
-C/C++11 standard library. But this really can be non-blocking, e.g. by interpreting a relaxed store
-to a large object as concurrent relaxed stores to each word of the object. So we assume the accesses
-to the contents of the buffer are non-blocking, and they add no additional synchronization cost than
-plain accesses.
+C/C++11 standard library. But actually this can be non-blocking, e.g. by interpreting a relaxed
+store to a large object as concurrent relaxed stores to each word of the object. So we assume the
+accesses to the contents of the buffer are non-blocking, and they add no additional synchronization
+cost than plain accesses.
 
 
 
