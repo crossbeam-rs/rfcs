@@ -112,7 +112,7 @@ Instead, we'll add functions `epoch::pin_fence()`, `Handle::pin_fence()`, and `C
 
 # Alternatives
 
-### Add safe `Guard::pin_with()` and remove `Guard::clone()`
+### Add safe `Handle::pin_with()` and remove `Guard::clone()`
 
 We can add a safe alternative to `Guard::pin()`:
 
